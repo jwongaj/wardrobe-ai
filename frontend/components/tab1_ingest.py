@@ -15,6 +15,16 @@ def render(user_id: str, profile: dict):
         st.session_state.staged_ingestion_items = []
     if "pending_duplicates" not in st.session_state:
         st.session_state.pending_duplicates = []
+    if "last_ingest_errors" not in st.session_state:
+        st.session_state.last_ingest_errors = []
+
+    # Display persistent errors from previous run if any
+    if st.session_state.last_ingest_errors:
+        for err in st.session_state.last_ingest_errors:
+            st.error(f"❌ {err}")
+        if st.button("Dismiss Errors", key="btn_clear_errors"):
+            st.session_state.last_ingest_errors = []
+            st.rerun()
 
     # =========================================================================
     # 1. DUPLICATE RESOLUTION MODAL
@@ -91,29 +101,51 @@ def render(user_id: str, profile: dict):
             dups = []
             errors = []
 
-            with st.spinner("Analyzing garments, isolating masks, and checking duplicates..."):
-                for file_obj in uploaded_files:
-                    res = api.ingest_image(file_obj, user_id=user_id, user_gender=profile.get("gender", "Womenswear"))
-                    
-                    if res.get("status") == "success":
-                        for itm in res.get("items", []):
-                            if "stage_id" not in itm:
-                                itm["stage_id"] = f"stg_{int(time.time() * 1000)}_{len(staged)}"
-                            staged.append(itm)
-                        dups.extend(res.get("pending_duplicates", []))
-                    else:
-                        err_msg = res.get("error", "Unknown error occurred during ingestion.")
-                        errors.append(f"**{file_obj.name}**: {err_msg}")
+            # 1. Ping health to wake up cold container if needed
+            with st.spinner("Connecting to styling engine..."):
+                if not api.check_health():
+                    time.sleep(2)
 
-            if errors:
-                for err in errors:
-                    st.error(f"❌ Ingestion Error: {err}")
+            # 2. Process uploads sequentially
+            progress_bar = st.progress(0, text="Starting AI vision cataloging...")
+            total_files = len(uploaded_files)
+
+            for idx, file_obj in enumerate(uploaded_files):
+                progress_bar.progress(
+                    (idx) / total_files,
+                    text=f"Analyzing {file_obj.name} ({idx + 1}/{total_files})..."
+                )
+
+                res = api.ingest_image(
+                    file_obj,
+                    user_id=user_id,
+                    user_gender=profile.get("gender", "Womenswear")
+                )
+
+                if res.get("status") == "success":
+                    for itm in res.get("items", []):
+                        if "stage_id" not in itm:
+                            itm["stage_id"] = f"stg_{int(time.time() * 1000)}_{len(staged)}"
+                        staged.append(itm)
+                    dups.extend(res.get("pending_duplicates", []))
+                else:
+                    err_msg = res.get("error", "Unknown ingestion error.")
+                    errors.append(f"**{file_obj.name}**: {err_msg}")
+
+            progress_bar.progress(1.0, text="Ingestion complete!")
+            time.sleep(0.4)
+
+            # Persist state
+            st.session_state.last_ingest_errors = errors
+            if staged:
+                st.session_state.staged_ingestion_items.extend(staged)
+            if dups:
+                st.session_state.pending_duplicates.extend(dups)
 
             if staged or dups:
-                st.session_state.staged_ingestion_items.extend(staged)
-                st.session_state.pending_duplicates.extend(dups)
                 st.session_state.uploader_key += 1
-                st.rerun()
+
+            st.rerun()
 
     # =========================================================================
     # 3. STAGED REVIEW & EDIT BEFORE FINAL COMMIT

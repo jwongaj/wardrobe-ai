@@ -33,7 +33,10 @@ from schemas import (
 
 # Initialize database schema/store if applicable
 if hasattr(database, "init_db"):
-    database.init_db()
+    try:
+        database.init_db()
+    except Exception as e:
+        print(f"[DB INIT NOTICE] {e}", flush=True)
 
 app = FastAPI(
     title="WoLo Wardrobe API",
@@ -93,17 +96,21 @@ async def ingest_wardrobe_image(
     user_id: str = Form(...),
     user_gender: str = Form("women")
 ):
+    print(f"\n[INGEST START] user_id='{user_id}' | file='{file.filename}'", flush=True)
     try:
         raw_bytes = await file.read()
         if not raw_bytes:
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
+        print(f"[INGEST] Running Gemini Vision detection ({len(raw_bytes)} bytes)...", flush=True)
         detection_result = gemini_service.detect_and_tag_garments(
             image_bytes=raw_bytes,
             user_gender=user_gender
         )
 
         detected_items = detection_result.get("items", [])
+        print(f"[INGEST] Gemini detected {len(detected_items)} garment/accessory candidate(s).", flush=True)
+
         if not detected_items:
             raise HTTPException(status_code=422, detail="No garments or accessories detected.")
 
@@ -112,9 +119,11 @@ async def ingest_wardrobe_image(
         pending_duplicates = []
         timestamp = int(time.time())
 
+        # Process each detected garment within the loop
         for idx, item in enumerate(detected_items):
             box_2d = item.get("box_2d")
             if not box_2d or len(box_2d) != 4:
+                print(f"[INGEST SKIP] Item {idx} missing valid box_2d", flush=True)
                 continue
 
             garment_type = str(item.get("garment_type", "top")).lower()
@@ -126,7 +135,8 @@ async def ingest_wardrobe_image(
                 "sunnies", "bag", "tote", "shoe", "footwear", "watch", "belt", "hat"
             ])
 
-            isolated_png_bytes = image_processor.crop_and_isolate_garment(
+            print(f"[INGEST] Isolating background [{idx+1}/{len(detected_items)}]: {sub_type}...", flush=True)
+            isolated_png_bytes = await image_processor.async_crop_and_isolate_garment(
                 image_bytes=raw_bytes,
                 box_2d=box_2d,
                 garment_type=garment_type,
@@ -143,7 +153,7 @@ async def ingest_wardrobe_image(
 
             item_payload = {
                 "user_id": user_id,
-                "garment_type": item.get("garment_type", "top"),
+                "garment_type": garment_type,
                 "sub_type": sub_type,
                 "primary_color": primary_color,
                 "secondary_colors": item.get("secondary_colors", []),
@@ -158,10 +168,12 @@ async def ingest_wardrobe_image(
 
             matched_dup = gemini_service.find_potential_duplicate(item, existing_items)
             if matched_dup:
+                print(f"[INGEST DUP] Potential duplicate found for '{sub_type}'", flush=True)
                 item_payload["matched_existing"] = matched_dup
                 pending_duplicates.append(item_payload)
             else:
                 saved = database.save_clothing_item(item_payload)
+                print(f"[INGEST SAVED] Successfully stored '{sub_type}'", flush=True)
                 processed_records.append(saved)
 
         return {
@@ -173,6 +185,9 @@ async def ingest_wardrobe_image(
         }
 
     except Exception as e:
+        import traceback
+        print(f"\n[INGEST EXCEPTION]", flush=True)
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -207,7 +222,6 @@ async def rotate_wardrobe_item(item_id: str, degrees: int = Query(90)):
 
     image_url = target_item["image_url"]
 
-    # If inline base64 data URI
     if image_url.startswith("data:"):
         import base64
         header, b64data = image_url.split(",", 1)
@@ -288,7 +302,6 @@ async def generate_outfit(req: OutfitRequest):
     if not items or len(items) < 2:
         raise HTTPException(status_code=400, detail="At least 2 items required in closet to curate an outfit.")
 
-    # Fetch dynamic user taste memory (Pillar 2)
     taste_profile = database.get_user_taste_profile(req.user_id)
 
     w_dict = req.weather.model_dump() if hasattr(req.weather, "model_dump") else dict(req.weather or {})
@@ -404,7 +417,7 @@ if __name__ == "__main__":
     print(f"=== LAUNCHING UVICORN ON 0.0.0.0:{port} ===", flush=True)
 
     try:
-        uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
+        uvicorn.run("backend.main:app", host="0.0.0.0", port=port, log_level="info")
     except Exception as e:
         print(f"CRITICAL STARTUP ERROR: {e}", flush=True)
         raise e

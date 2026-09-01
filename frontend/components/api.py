@@ -1,11 +1,47 @@
 import os
+import io
 import httpx
 import streamlit as st
 from typing import List, Dict, Any, Optional
+from PIL import Image, ImageOps
+
+# Support HEIC/HEIF files if pillow-heif is installed
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+except ImportError:
+    pass
 
 # Default to your live Render backend
 API_BASE_URL = os.getenv("API_BASE_URL", "https://wardrobe-ai-backend-7gil.onrender.com").rstrip("/")
-CLIENT_TIMEOUT = 120.0
+CLIENT_TIMEOUT = 180.0
+
+
+def _compress_upload_buffer(file_bytes: bytes, max_dim: int = 1536) -> tuple[bytes, str]:
+    """
+    Compresses image client-side to ~200-400KB before transmission.
+    Prevents large 10MB+ camera files from timing out on Render free tier.
+    """
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+        try:
+            img = ImageOps.exif_transpose(img)
+        except Exception:
+            pass
+
+        img = img.convert("RGB")
+        w, h = img.size
+
+        if max(w, h) > max_dim:
+            scale = max_dim / float(max(w, h))
+            img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+
+        out_buf = io.BytesIO()
+        img.save(out_buf, format="JPEG", quality=85, optimize=True)
+        return out_buf.getvalue(), "image/jpeg"
+    except Exception:
+        # Fallback to raw bytes if PIL cannot parse the file format directly
+        return file_bytes, "image/jpeg"
 
 
 def check_health() -> bool:
@@ -19,19 +55,27 @@ def check_health() -> bool:
 
 def ingest_image(file, user_id: str, user_gender: str) -> Dict[str, Any]:
     try:
-        file_bytes = file.getvalue() if hasattr(file, "getvalue") else file.read()
+        raw_bytes = file.getvalue() if hasattr(file, "getvalue") else file.read()
         file_name = getattr(file, "name", "upload.jpg")
-        mime_type = getattr(file, "type", "image/jpeg") or "image/jpeg"
 
-        files = {"file": (file_name, file_bytes, mime_type)}
+        # 1. Compress before sending over HTTP
+        compressed_bytes, mime_type = _compress_upload_buffer(raw_bytes, max_dim=1536)
+
+        files = {"file": (file_name, compressed_bytes, mime_type)}
         data = {"user_id": user_id, "user_gender": user_gender}
 
-        with httpx.Client(timeout=CLIENT_TIMEOUT) as client:
+        # 2. Dedicated generous timeout configuration
+        timeout_config = httpx.Timeout(CLIENT_TIMEOUT, connect=30.0)
+        with httpx.Client(timeout=timeout_config) as client:
             res = client.post(f"{API_BASE_URL}/api/v1/wardrobe/ingest", files=files, data=data)
             if res.status_code == 200:
                 st.cache_data.clear()
                 return res.json()
             return {"status": "error", "error": f"HTTP {res.status_code}: {res.text}"}
+    except httpx.ReadTimeout:
+        return {"status": "error", "error": "Backend processing took longer than 180s (Read Timeout)."}
+    except httpx.ConnectTimeout:
+        return {"status": "error", "error": "Could not connect to backend. It might be waking up from sleep."}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -44,7 +88,7 @@ def save_single_item(item_payload: Dict[str, Any]) -> Dict[str, Any]:
             if res.status_code == 200:
                 st.cache_data.clear()
                 return res.json()
-            return {"status": "error", "error": res.text}
+            return {"status": "error", "error": f"HTTP {res.status_code}: {res.text}"}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -56,7 +100,7 @@ def update_item_image(item_id: str, image_url: str) -> Dict[str, Any]:
             if res.status_code == 200:
                 st.cache_data.clear()
                 return res.json()
-            return {"status": "error", "error": res.text}
+            return {"status": "error", "error": f"HTTP {res.status_code}: {res.text}"}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -131,7 +175,15 @@ def fetch_weather(location: Optional[str] = None) -> Dict[str, Any]:
 
 
 def curate_outfit(user_id: str, user_gender: str, event_description: str, time_of_day: str, desired_vibe: str, weather: Dict[str, Any], available_items: List[Dict[str, Any]]) -> Dict[str, Any]:
-    payload = {"user_id": user_id, "user_gender": user_gender, "event_description": event_description, "time_of_day": time_of_day, "desired_vibe": desired_vibe, "weather": weather, "available_items": available_items}
+    payload = {
+        "user_id": user_id,
+        "user_gender": user_gender,
+        "event_description": event_description,
+        "time_of_day": time_of_day,
+        "desired_vibe": desired_vibe,
+        "weather": weather,
+        "available_items": available_items
+    }
     try:
         with httpx.Client(timeout=45.0) as client:
             res = client.post(f"{API_BASE_URL}/api/v1/outfits/generate", json=payload)
