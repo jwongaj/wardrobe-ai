@@ -50,8 +50,8 @@ def generate_fallback_outfit(
         selected_ids.append(outerwear[0].get("id") or outerwear[0].get("db_id"))
 
     return {
-        "outfit_name": "Fresh Alternative Capsule",
-        "styling_reasoning": "A clean rotation styled from your alternative wardrobe pieces.",
+        "outfit_name": "Harmonious Day Capsule",
+        "styling_reasoning": "A balanced ensemble matching silhouette volume and formality across layers.",
         "weather_alignment": f"Selected core layers suited for {temp_c}°C ambient conditions.",
         "selected_item_ids": [i for i in selected_ids if i is not None]
     }
@@ -68,7 +68,7 @@ async def generate_outfit_recommendation(
     taste_profile: Optional[Dict[str, Any]] = None,
     disliked_combinations: Optional[List[List[Any]]] = None
 ) -> Dict[str, Any]:
-    # 1. Compact catalog representation
+    # 1. Structure clear garment metadata
     catalog_summary = []
     for it in items:
         item_id = str(it.get("id") or it.get("db_id"))
@@ -91,7 +91,7 @@ async def generate_outfit_recommendation(
     taste = taste_profile or {}
     active_tags = ", ".join(taste.get("active_tags", ["Luminous Minimalist"]))
 
-    # 2. Strict Negative Constraint Formatting with Anti-Lazy-Pivot Rules
+    # 2. Strict Negative Constraint Formatting
     banned_instructions = ""
     flattened_avoid_ids = []
     if disliked_combinations:
@@ -102,44 +102,52 @@ async def generate_outfit_recommendation(
             flattened_avoid_ids.extend(clean_combo)
 
         banned_instructions = f"""
-CRITICAL NEGATIVE CONSTRAINTS (USER REJECTED THESE EXACT COMBINATIONS):
-The user explicitly thumbed down and rejected these previous item pairings:
+STRICT NEGATIVE CONSTRAINTS (USER REJECTED PAIRINGS):
+The user thumbed down these exact item combinations:
 {chr(10).join(disliked_str_list)}
 
-ANTI-LAZY-PIVOT RULES (STRICT COMPLIANCE REQUIRED):
-1. You MUST NOT retain the exact same core clothing foundation (do NOT keep the same top + bottom or dress and simply add/change a necklace, jewelry, shoes, or accessory).
-2. You MUST replace at least one primary anchor garment (choose a distinctly different top, bottom, or dress).
-3. If the user previously disliked a look, pivot the overall silhouette and color balance noticeably.
+ANTI-LAZY-PIVOT RULES:
+1. You MUST NOT reuse the exact same core foundation (do not keep the same top+bottom or dress while just adding an accessory).
+2. You MUST swap at least one major garment piece (top, bottom, or dress).
 """
 
-    # 3. Dynamic Prompt with High Priority on User's Immediate Vibe
+    # 3. Formality & Coherence Stylist Prompt
     prompt = f"""
-You are an expert personal wardrobe stylist and luxury capsule curator.
+You are an editorial wardrobe stylist and luxury capsule curator.
 
-IMMEDIATE REQUEST PRIORITY (MUST FOLLOW ABOVE ALL ELSE):
-- Target Vibe / Mood: "{desired_vibe}" (CRITICAL: If the user requests "{desired_vibe}", prioritize items with colors, cuts, and aesthetics that actively embody "{desired_vibe}". Do NOT default to neutral or all-white unless explicitly requested).
+CONTEXT:
 - Occasion / Destination: {event_description}
 - Time of Day: {time_of_day}
-- Weather: {location} | {temp_c}°C (feels {feels_like}°C), {condition}, Rain: {is_rain}
-
-LONG-TERM TASTE SIGNALS:
-- Baseline Taste: {active_tags}
+- Requested Vibe / Mood: "{desired_vibe}"
+- Climate: {location} | {temp_c}°C (feels {feels_like}°C), {condition}, Rain: {is_rain}
+- User Style Profile: {active_tags}
 
 {banned_instructions}
 
-AVAILABLE WARDROBE PIECES:
+WARDROBE INVENTORY:
 {json.dumps(catalog_summary, separators=(',', ':'))}
 
-CURATION RULES:
-1. Return items strictly from the list above using their exact "id".
-2. Build a complete look: (Top + Bottom) OR (Dress) + optional Outerwear/Shoes/Accessories.
-3. Strongly reflect the requested vibe "{desired_vibe}" across color harmony and garment silhouette.
+CRITICAL STYLING PRINCIPLES (MUST FOLLOW STRICTLY):
+1. **FORMALITY HARMONY (NO VIBE CLASHES):**
+   - Garments and footwear MUST share a compatible formality score (within $\\pm 2$ on the 1-10 scale).
+   - NEVER pair casual daytime pieces (e.g., casual sundresses, linen shirts, denim, jersey tees) with formal evening footwear (e.g., stiletto heels, patent leather dress shoes, satin pumps).
+   - Casual pieces belong with relaxed footwear (e.g., clean trainers, minimalist leather slides, flat sandals, canvas sneakers).
+   - Formal pieces belong with tailored or elevated footwear.
+   - Matching color alone is NOT enough — texture, structure, and aesthetic level MUST harmonize.
 
-Return ONLY a JSON object matching this schema:
+2. **VIBE FIDELITY:**
+   - If the user requests "{desired_vibe}", let this dictate the energy, colors, and cut of the outfit.
+   - If "{desired_vibe}" includes words like 'colorful', 'bold', or 'vibrant', pick colorful pieces rather than defaulting to monochrome/all-white.
+
+3. **STRUCTURAL COMPLETENESS:**
+   - Build a complete look: [Top + Bottom OR Dress] + optional [Outerwear if {temp_c}°C warrants] + optional [Footwear / Bag / Accessory].
+   - Ensure fabrics complement each other (e.g., linen with cotton/canvas, crisp tailoring with fine knitwear or silk).
+
+Return ONLY a valid JSON object matching this schema:
 {{
-  "outfit_name": "Descriptive Look Title",
-  "styling_reasoning": "2 sentences explaining why this look embodies '{desired_vibe}' and harmonizes with the occasion.",
-  "weather_alignment": "1 sentence on climate comfort.",
+  "outfit_name": "Editorial Look Title",
+  "styling_reasoning": "2 sentences explaining the texture harmony, formality balance, and why this look embodies '{desired_vibe}'.",
+  "weather_alignment": "1 sentence on climate comfort for {temp_c}°C.",
   "selected_item_ids": ["id1", "id2"]
 }}
 """
