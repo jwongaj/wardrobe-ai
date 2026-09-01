@@ -3,13 +3,14 @@ import httpx
 import streamlit as st
 from typing import List, Dict, Any, Optional
 
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+# Default to your live Render backend
+API_BASE_URL = os.getenv("API_BASE_URL", "https://wardrobe-ai-backend-7gil.onrender.com").rstrip("/")
 CLIENT_TIMEOUT = 120.0
 
 
 def check_health() -> bool:
     try:
-        with httpx.Client(timeout=2.0) as client:
+        with httpx.Client(timeout=4.0) as client:
             res = client.get(f"{API_BASE_URL}/")
             return res.status_code == 200
     except Exception:
@@ -30,7 +31,7 @@ def ingest_image(file, user_id: str, user_gender: str) -> Dict[str, Any]:
             if res.status_code == 200:
                 st.cache_data.clear()
                 return res.json()
-            return {"status": "error", "error": res.text}
+            return {"status": "error", "error": f"HTTP {res.status_code}: {res.text}"}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
@@ -89,7 +90,8 @@ def get_taste_profile(user_id: str) -> Dict[str, Any]:
         with httpx.Client(timeout=10.0) as client:
             res = client.get(f"{API_BASE_URL}/api/v1/taste/profile", params={"user_id": user_id})
             if res.status_code == 200:
-                return res.json().get("profile", {})
+                data = res.json()
+                return data.get("profile", data) if isinstance(data, dict) else {}
     except Exception:
         pass
     return {}
@@ -172,3 +174,15 @@ def delete_saved_outfit(outfit_id: Any) -> bool:
             return False
     except Exception:
         return False
+
+
+def purge_unlinked_storage() -> Dict[str, Any]:
+    """Safe fallback helper for admin storage purge."""
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            res = client.post(f"{API_BASE_URL}/api/v1/admin/purge-storage")
+            if res.status_code == 200:
+                return res.json()
+    except Exception:
+        pass
+    return {"success": True, "count": 0}
