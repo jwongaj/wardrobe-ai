@@ -25,17 +25,17 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # =====================================================================
-# DYNAMIC TASK MODEL ROUTER (Aligned with AI Studio Quotas & Limits)
+# DYNAMIC TASK MODEL ROUTER (Updated for Current Availability)
 # =====================================================================
 MODEL_ROUTER = {
-    # 500 RPD / 15 RPM: High-throughput multimodal vision for bounding boxes & feature extraction
-    "vision_ingest": os.getenv("MODEL_VISION_INGEST", "gemini-2.5-flash"),
+    # High-throughput multimodal vision for bounding boxes & feature extraction
+    "vision_ingest": os.getenv("MODEL_VISION_INGEST", "gemini-3.6-flash"),
     
-    # High-reasoning model for wardrobe logic, harmony, and climate styling
-    "styling_curator": os.getenv("MODEL_STYLING_CURATOR", "gemini-2.5-pro"),
+    # High-reasoning model for wardrobe logic, color harmony, and climate styling
+    "styling_curator": os.getenv("MODEL_STYLING_CURATOR", "gemini-1.5-pro"),
     
     # Fast semantic deduplication
-    "dedup_matcher": os.getenv("MODEL_DEDUP", "gemini-2.5-flash")
+    "dedup_matcher": os.getenv("MODEL_DEDUP", "gemini-3.6-flash")
 }
 
 
@@ -144,7 +144,7 @@ def detect_and_tag_garments(
     }}
     """
 
-    target_model = MODEL_ROUTER.get("vision_ingest", "gemini-2.5-flash")
+    target_model = MODEL_ROUTER.get("vision_ingest", "gemini-3.6-flash")
 
     try:
         response = client.models.generate_content(
@@ -178,6 +178,26 @@ def detect_and_tag_garments(
         return {"items": []}
 
     except Exception as e:
+        # Fallback to gemini-1.5-flash if gemini-3.6-flash meets any temporary issue
+        if target_model != "gemini-1.5-flash":
+            print(f"Retrying vision ingestion with fallback model 'gemini-1.5-flash' due to: {e}")
+            try:
+                response = client.models.generate_content(
+                    model="gemini-1.5-flash",
+                    contents=[
+                        types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"),
+                        prompt
+                    ],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.1
+                    )
+                )
+                cleaned_text = _clean_json_text(response.text)
+                return json.loads(cleaned_text)
+            except Exception as inner_e:
+                print(f"Fallback vision ingestion failed: {inner_e}")
+
         print(f"\n--- GEMINI VISION INGESTION ERROR ({target_model}) ---")
         traceback.print_exc()
         print("------------------------------------------------------\n")
@@ -191,11 +211,12 @@ def curate_outfit(
     time_of_day: str,
     desired_vibe: str,
     weather: Dict[str, Any],
-    available_items: List[Dict[str, Any]]
+    available_items: List[Dict[str, Any]],
+    taste_profile: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
     Task: Multi-constraint Creative Styling & Cohesion Reasoning
-    Routed to: MODEL_ROUTER["styling_curator"]
+    Routed to: MODEL_ROUTER["styling_curator"] (gemini-1.5-pro)
     """
     if not client:
         raise RuntimeError("GEMINI_API_KEY is not configured.")
@@ -216,15 +237,19 @@ def curate_outfit(
             "seasons": it.get("seasons")
         })
 
+    taste_context = format_taste_memory_prompt(taste_profile) if taste_profile else ""
+
     prompt = f"""
     You are an editorial personal stylist for an exclusive capsule wardrobe atelier.
     Curate the single best outfit from the client's available wardrobe pieces below.
 
     CLIENT CONTEXT:
-    - Tailoring: {user_gender}
+    - Tailoring Perspective: {user_gender}
     - Occasion / Destination: {event_description}
     - Time of Day: {time_of_day}
     - Desired Aesthetic / Vibe: {desired_vibe}
+
+    {taste_context}
 
     ATMOSPHERE & WEATHER:
     - Location: {weather.get('display_location', 'Local')}
@@ -254,7 +279,7 @@ def curate_outfit(
     }}
     """
 
-    target_model = MODEL_ROUTER.get("styling_curator", "gemini-2.5-pro")
+    target_model = MODEL_ROUTER.get("styling_curator", "gemini-1.5-pro")
 
     try:
         response = client.models.generate_content(
@@ -283,10 +308,10 @@ def curate_outfit(
         traceback.print_exc()
         print("-------------------------------------------------\n")
         return {
-            "outfit_name": "Classic Ensemble",
+            "outfit_name": "Classic Minimalist Ensemble",
             "selected_item_ids": [m["id"] for m in manifest[:3]],
             "styling_reasoning": "Curated an essential combination from your available wardrobe.",
-            "weather_alignment": "Well-balanced for the day."
+            "weather_alignment": "Comfortable and well-balanced for the day."
         }
 
 
@@ -339,7 +364,7 @@ def find_potential_duplicate(new_item_desc: Dict[str, Any], existing_items: List
 
 
 def format_taste_memory_prompt(taste_profile: Dict[str, Any]) -> str:
-    """Formats dynamic Pillar 2 taste constraints for Gemini reasoning."""
+    """Formats dynamic taste constraints for Gemini reasoning."""
     if not taste_profile:
         return "Taste Profile: Refined, effortless minimalist aesthetic."
 
@@ -348,7 +373,7 @@ def format_taste_memory_prompt(taste_profile: Dict[str, Any]) -> str:
     avoid_tags = ", ".join(taste_profile.get("avoided_tags", []))
 
     return f"""
-    PERSONAL TASTE MEMORY & LEARNED CONSTRAINTS (Pillar 2 Dynamic Evolution):
+    PERSONAL TASTE MEMORY & LEARNED CONSTRAINTS:
     - Preferred Baseline Formality: ~{target_formality}/10 (balance relaxed comfort with intentional polish).
     - Learned Color Harmony Affinities: {fav_pairs or 'Neutral & soft earth tones'}.
     - Strongly Avoided Elements/Styles: {avoid_tags or 'Overly rigid corporate cuts, chaotic loud prints'}.
