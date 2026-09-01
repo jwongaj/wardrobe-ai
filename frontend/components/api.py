@@ -252,3 +252,30 @@ def rotate_item_image(item_id: Any, degrees: int = 90) -> bool:
             return res.status_code == 200
     except Exception:
         return False
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_image_bytes(image_url: str) -> Optional[bytes]:
+    """
+    Safely fetches image bytes from Supabase or web URLs to bypass
+    browser CORS/RLS header issues and prevent broken image icons.
+    """
+    if not image_url or not isinstance(image_url, str):
+        return None
+    
+    clean_url = image_url.strip()
+    if clean_url.startswith("data:"):
+        try:
+            _, b64data = clean_url.split(",", 1)
+            import base64
+            return base64.b64decode(b64data)
+        except Exception:
+            return None
+
+    try:
+        with httpx.Client(timeout=8.0, follow_redirects=True) as client:
+            resp = client.get(clean_url)
+            if resp.status_code == 200 and len(resp.content) > 0:
+                return resp.content
+    except Exception:
+        pass
+    return None

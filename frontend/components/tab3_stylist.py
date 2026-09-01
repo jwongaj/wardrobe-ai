@@ -16,17 +16,15 @@ def render(user_id: str, profile: dict):
     st.markdown("### ✨ AI Styling Salon")
     st.caption(f"Curating outfits tailored for **{profile.get('name', user_id)}**")
 
-    # =========================================================================
-    # 1. WEATHER CONTEXT & TRAVEL OVERRIDE
-    # =========================================================================
     if "weather_override" not in st.session_state:
         st.session_state.weather_override = None
     if "custom_location_query" not in st.session_state:
         st.session_state.custom_location_query = ""
     if "rejected_outfit_combos" not in st.session_state:
         st.session_state.rejected_outfit_combos = []
+    if "curation_version" not in st.session_state:
+        st.session_state.curation_version = 0
 
-    # Determine Weather Context
     if st.session_state.weather_override:
         weather_data = st.session_state.weather_override
     else:
@@ -39,7 +37,6 @@ def render(user_id: str, profile: dict):
     cond = weather_data.get("condition", "Pleasant")
     is_rain = weather_data.get("is_raining", False)
 
-    # Minimalist Modern Weather Header
     st.markdown(
         f"""
         <div style="
@@ -73,7 +70,6 @@ def render(user_id: str, profile: dict):
         unsafe_allow_html=True
     )
 
-    # Travel / Climate Expander
     with st.expander("✈️ Traveling or Override Climate", expanded=False):
         c_city1, c_city2, c_city3 = st.columns([2.5, 1.2, 1.5])
         with c_city1:
@@ -115,9 +111,6 @@ def render(user_id: str, profile: dict):
 
     st.markdown("---")
 
-    # =========================================================================
-    # 2. STYLING INPUTS
-    # =========================================================================
     items = api.get_clothing_items(user_id)
     if len(items) < 2:
         st.warning("You need at least 2 pieces in your wardrobe vault. Head to **Tab 1** to ingest your garments.")
@@ -151,13 +144,16 @@ def render(user_id: str, profile: dict):
             st.session_state["curation_event"] = event
             st.session_state["curation_time_of_day"] = time_of_day
             st.session_state["curation_desired_vibe"] = desired_vibe
+            st.session_state.curation_version += 1
             st.rerun()
 
     # =========================================================================
-    # 3. CURATED LOOK & INSTANT SAVE
+    # CURATED LOOK DISPLAY (Keyed by curation_version)
     # =========================================================================
     if "active_curation" in st.session_state:
         curation = st.session_state["active_curation"]
+        v = st.session_state.curation_version
+        
         raw_name = curation.get("outfit_name") or curation.get("title", "Curated Ensemble")
         outfit_name = raw_name.replace("🥂", "").replace("✨", "").strip()
         selected_ids = [str(x) for x in curation.get("selected_item_ids", [])]
@@ -191,18 +187,18 @@ def render(user_id: str, profile: dict):
                     with st.container(border=True):
                         img_url = it.get("image_url", "")
                         sub_title = it.get("sub_type", "Garment")
-                        if img_url:
-                            try:
-                                st.image(img_url, use_container_width=True)
-                            except Exception:
-                                st.image(f"https://placehold.co/140x140/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}", use_container_width=True)
+                        
+                        img_bytes = api.load_image_bytes(img_url)
+                        if img_bytes:
+                            st.image(img_bytes, use_container_width=True)
                         else:
                             st.image(f"https://placehold.co/140x140/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}", use_container_width=True)
+
                         st.markdown(f"**{sub_title}**")
                         st.caption(f"{it.get('primary_color', 'Neutral')} • {it.get('fabric_material', 'Fabric')}")
 
         st.write("")
-        if st.button("🔖 Save Look to Lookbook", type="primary", use_container_width=True):
+        if st.button("🔖 Save Look to Lookbook", type="primary", use_container_width=True, key=f"save_look_btn_{v}"):
             save_payload = {
                 "user_id": user_id,
                 "title": outfit_name,
@@ -225,30 +221,31 @@ def render(user_id: str, profile: dict):
             with fb_col1:
                 e1, e2 = st.columns(2)
                 with e1:
-                    if st.button("👍", help="Love this look", use_container_width=True, key="thumb_up_btn"):
+                    if st.button("👍", help="Love this look", use_container_width=True, key=f"thumb_up_btn_{v}"):
                         api.submit_binary_feedback(
                             user_id=user_id,
                             rating="thumbs_up",
-                            chips=st.session_state.get("stylist_chips_selected", []),
+                            chips=st.session_state.get(f"stylist_chips_{v}", []),
                             outfit_items=matched_items,
                             outfit_id=curation.get("id")
                         )
                         st.toast("Feedback recorded! Algorithm adjusted.", icon="👍")
                 with e2:
-                    if st.button("👎", help="Not for me - auto-generate new styling", use_container_width=True, key="thumb_down_btn"):
-                        # 1. Submit negative feedback
-                        api.submit_binary_feedback(
-                            user_id=user_id,
-                            rating="thumbs_down",
-                            chips=st.session_state.get("stylist_chips_selected", []),
-                            outfit_items=matched_items,
-                            outfit_id=curation.get("id")
-                        )
-                        # 2. Record rejected item IDs
+                    if st.button("👎", help="Not for me - auto-generate new styling", use_container_width=True, key=f"thumb_down_btn_{v}"):
+                        # 1. Record rejection
                         rejected_ids = [it.get("id") or it.get("db_id") for it in matched_items]
                         st.session_state.rejected_outfit_combos.append(rejected_ids)
 
-                        # 3. Auto-regenerate fresh look
+                        # 2. Submit negative feedback
+                        api.submit_binary_feedback(
+                            user_id=user_id,
+                            rating="thumbs_down",
+                            chips=st.session_state.get(f"stylist_chips_{v}", []),
+                            outfit_items=matched_items,
+                            outfit_id=curation.get("id")
+                        )
+
+                        # 3. Fetch fresh outfit & increment version to force DOM update
                         with st.spinner("Refining style algorithm and styling an alternative look..."):
                             new_curation = api.curate_outfit(
                                 user_id=user_id,
@@ -261,11 +258,10 @@ def render(user_id: str, profile: dict):
                             )
                             if "error" not in new_curation:
                                 st.session_state["active_curation"] = new_curation
-                                st.toast("New ensemble styled!", icon="✨")
-                                time.sleep(0.3)
+                                st.session_state.curation_version += 1
                                 st.rerun()
                             else:
                                 st.error(f"Regeneration error: {new_curation['error']}")
 
             with fb_col2:
-                st.pills("Reaction Tags", CHIP_OPTIONS, selection_mode="multi", label_visibility="collapsed", key="stylist_chips_selected")
+                st.pills("Reaction Tags", CHIP_OPTIONS, selection_mode="multi", label_visibility="collapsed", key=f"stylist_chips_{v}")

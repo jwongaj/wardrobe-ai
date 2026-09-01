@@ -3,26 +3,19 @@ import time
 from components import api
 
 
-def _render_safe_garment_image(image_url: str, title: str):
-    """
-    Renders image via st.image, guaranteeing no broken question-mark
-    boxes occur even if a legacy bad URL or empty string is passed.
-    """
+def _render_item_card_image(image_url: str, title: str):
+    """Renders image bytes directly to prevent browser question-mark errors."""
     placeholder = f"https://placehold.co/300x300/F4F6F0/7D9D64?text={title.replace(' ', '+')}"
     
-    if not image_url or not isinstance(image_url, str):
-        st.image(placeholder, use_container_width=True)
-        return
-
-    clean_url = image_url.strip()
-    if not (clean_url.startswith("http://") or clean_url.startswith("https://") or clean_url.startswith("data:")):
-        st.image(placeholder, use_container_width=True)
-        return
-
-    try:
-        st.image(clean_url, use_container_width=True)
-    except Exception:
-        st.image(placeholder, use_container_width=True)
+    img_bytes = api.load_image_bytes(image_url)
+    if img_bytes:
+        try:
+            st.image(img_bytes, use_container_width=True)
+            return
+        except Exception:
+            pass
+    
+    st.image(placeholder, use_container_width=True)
 
 
 def render(user_id: str, profile: dict):
@@ -81,8 +74,8 @@ def render(user_id: str, profile: dict):
                 img_url = item.get("image_url", "")
                 sub_title = item.get("sub_type", "Garment")
                 
-                # Robust rendering with guaranteed fallback
-                _render_safe_garment_image(img_url, sub_title)
+                # Robust rendering with zero broken icon leakage
+                _render_item_card_image(img_url, sub_title)
 
                 st.markdown(f"**{sub_title}**")
                 st.caption(f"**Palette:** {item.get('primary_color', 'Neutral')} • **Fabric:** {item.get('fabric_material', 'Fabric')}")
