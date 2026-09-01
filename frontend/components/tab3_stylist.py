@@ -221,7 +221,7 @@ def render(user_id: str, profile: dict):
             with fb_col1:
                 e1, e2 = st.columns(2)
                 with e1:
-                    if st.button("👍", help="Love this look", use_container_width=True, key=f"thumb_up_btn_{v}"):
+                    if st.button("👍", help="Love this look", use_container_width=True, key=f"thumb_up_{v}"):
                         api.submit_binary_feedback(
                             user_id=user_id,
                             rating="thumbs_up",
@@ -229,14 +229,10 @@ def render(user_id: str, profile: dict):
                             outfit_items=matched_items,
                             outfit_id=curation.get("id")
                         )
-                        st.toast("Feedback recorded! Algorithm adjusted.", icon="👍")
+                        st.toast("Taste memory reinforced!", icon="👍")
                 with e2:
-                    if st.button("👎", help="Not for me - auto-generate new styling", use_container_width=True, key=f"thumb_down_btn_{v}"):
-                        # 1. Record rejection
-                        rejected_ids = [it.get("id") or it.get("db_id") for it in matched_items]
-                        st.session_state.rejected_outfit_combos.append(rejected_ids)
-
-                        # 2. Submit negative feedback
+                    if st.button("👎", help="Dislike & auto-generate new styling", use_container_width=True, key=f"thumb_down_{v}"):
+                        # 1. Submit negative feedback to persist in Supabase
                         api.submit_binary_feedback(
                             user_id=user_id,
                             rating="thumbs_down",
@@ -244,24 +240,31 @@ def render(user_id: str, profile: dict):
                             outfit_items=matched_items,
                             outfit_id=curation.get("id")
                         )
-
-                        # 3. Fetch fresh outfit & increment version to force DOM update
-                        with st.spinner("Refining style algorithm and styling an alternative look..."):
-                            new_curation = api.curate_outfit(
-                                user_id=user_id,
-                                user_gender=profile.get("gender", "Womenswear"),
-                                event_description=st.session_state.get("curation_event", event),
-                                time_of_day=st.session_state.get("curation_time_of_day", time_of_day),
-                                desired_vibe=st.session_state.get("curation_desired_vibe", desired_vibe),
-                                weather=weather_data,
-                                available_items=items
-                            )
-                            if "error" not in new_curation:
-                                st.session_state["active_curation"] = new_curation
-                                st.session_state.curation_version += 1
-                                st.rerun()
-                            else:
-                                st.error(f"Regeneration error: {new_curation['error']}")
+                        
+                        # 2. Trigger immediate re-curation
+                        st.session_state["trigger_auto_restyle"] = True
+                        st.rerun()
 
             with fb_col2:
                 st.pills("Reaction Tags", CHIP_OPTIONS, selection_mode="multi", label_visibility="collapsed", key=f"stylist_chips_{v}")
+
+                # Top-level auto-restyle handler outside button scope to avoid UI freeze
+    if st.session_state.get("trigger_auto_restyle", False):
+        st.session_state["trigger_auto_restyle"] = False
+        with st.spinner("Refining style algorithm and styling an alternative look..."):
+            new_curation = api.curate_outfit(
+                user_id=user_id,
+                user_gender=profile.get("gender", "Womenswear"),
+                event_description=st.session_state.get("curation_event", event),
+                time_of_day=st.session_state.get("curation_time_of_day", time_of_day),
+                desired_vibe=st.session_state.get("curation_desired_vibe", desired_vibe),
+                weather=weather_data,
+                available_items=items
+            )
+            if "error" not in new_curation:
+                st.session_state["active_curation"] = new_curation
+                st.session_state.curation_version += 1
+                st.toast("New ensemble styled!", icon="✨")
+                st.rerun()
+            else:
+                st.error(f"Regeneration error: {new_curation['error']}")

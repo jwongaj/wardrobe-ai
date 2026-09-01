@@ -148,7 +148,10 @@ def get_user_taste_profile(user_id: str) -> Dict[str, Any]:
         try:
             res = supabase.table("user_taste_profiles").select("*").eq("user_id", clean_uid).execute()
             if res.data and len(res.data) > 0:
-                return res.data[0]
+                profile = res.data[0]
+                if "rejected_combinations" not in profile:
+                    profile["rejected_combinations"] = []
+                return profile
         except Exception as e:
             print(f"Supabase get_user_taste_profile error: {e}", flush=True)
 
@@ -161,6 +164,7 @@ def get_user_taste_profile(user_id: str) -> Dict[str, Any]:
             "suggested_tags": list(DEFAULT_SUGGESTED_TAGS),
             "avoided_tags": ["overly loud prints", "stiff corporate"],
             "tag_weights": {t.lower(): 1.2 for t in DEFAULT_ACTIVE_TAGS},
+            "rejected_combinations": [],
             "thumbs_up_count": 0,
             "thumbs_down_count": 0,
             "updated_at": int(time.time())
@@ -175,7 +179,7 @@ def get_user_taste_profile(user_id: str) -> Dict[str, Any]:
     return _LOCAL_TASTE[clean_uid]
 
 
-def save_user_feedback(
+ef save_user_feedback(
     user_id: str,
     rating: str,
     chips: List[str],
@@ -189,6 +193,14 @@ def save_user_feedback(
         profile["thumbs_up_count"] = profile.get("thumbs_up_count", 0) + 1
     else:
         profile["thumbs_down_count"] = profile.get("thumbs_down_count", 0) + 1
+        
+        # Persist rejected item ID combination permanently
+        rejected_ids = [str(item.get("id") or item.get("db_id")) for item in outfit_items if item.get("id") or item.get("db_id")]
+        if rejected_ids:
+            combos = profile.get("rejected_combinations", [])
+            if rejected_ids not in combos:
+                combos.append(rejected_ids)
+                profile["rejected_combinations"] = combos[-20:] # Keep last 20
 
     formality_scores = [
         int(item.get("formality", 5))

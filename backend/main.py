@@ -299,12 +299,12 @@ async def update_taste_tags_route(payload: UpdateTasteTagsPayload):
 
 @app.post("/api/v1/outfits/generate")
 async def generate_outfit(req: OutfitRequest):
-    """Generates an occasion-ready outfit recommendation respecting weather & dynamic taste memory."""
     items = req.available_items or database.get_clothing_items_by_user(req.user_id)
     if not items or len(items) < 2:
         raise HTTPException(status_code=400, detail="At least 2 items required in closet to curate an outfit.")
 
     taste_profile = database.get_user_taste_profile(req.user_id)
+    persisted_dislikes = taste_profile.get("rejected_combinations", [])
 
     w_dict = req.weather.model_dump() if hasattr(req.weather, "model_dump") else dict(req.weather or {})
     weather_payload = {
@@ -323,7 +323,8 @@ async def generate_outfit(req: OutfitRequest):
         desired_vibe=req.desired_vibe,
         weather=weather_payload,
         items=items,
-        taste_profile=taste_profile
+        taste_profile=taste_profile,
+        disliked_combinations=persisted_dislikes
     )
 
 
