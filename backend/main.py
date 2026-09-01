@@ -17,7 +17,24 @@ from config import genai_client
 import database
 import cloud_storage
 import stylist_service
-import image_processor
+
+from image_processor import (
+    async_crop_and_isolate_garment,
+    get_storage_path,
+    STORAGE_BUCKET_NAME
+)
+
+# In your upload handler:
+storage_path = get_storage_path(user_id=user_id, file_name=file_id, is_worn_look=False)
+# Result: "items/jasmine_wong/file_123.png"
+
+supabase_client.storage.from_(STORAGE_BUCKET_NAME).upload(
+    path=storage_path,
+    file=isolated_png_bytes,
+    file_options={"content-type": "image/png"}
+)
+image_url = supabase_client.storage.from_(STORAGE_BUCKET_NAME).get_public_url(storage_path)
+
 import gemini_service
 import weather_service
 from schemas import (
