@@ -2,7 +2,7 @@ import io
 import gc
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Optional, Tuple
+from typing import List, Optional
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
@@ -41,7 +41,7 @@ def _get_rembg_session():
             from rembg import new_session
             _REMBG_SESSION = new_session("u2netp")
         except Exception as e:
-            print(f"Warning: Failed to load rembg u2netp session: {e}")
+            print(f"[REMBG INIT WARNING] Failed to load u2netp session: {e}", flush=True)
             _REMBG_SESSION = None
     return _REMBG_SESSION
 
@@ -54,116 +54,107 @@ def crop_and_isolate_garment(
     is_accessory: bool = False
 ) -> bytes:
     """
-    Memory-safe precision cropping and background isolation.
-    Guarantees white/cream/linen garments remain completely opaque.
+    Memory-safe precision cropping and high-speed background isolation.
+    - Caps crop at 512px for sub-2s execution on shared CPU.
+    - Preserves white, cream, and linen garment opacity.
     """
-    # 1. Load image and normalize EXIF orientation
-    pil_img = Image.open(io.BytesIO(image_bytes))
-    try:
-        pil_img = ImageOps.exif_transpose(pil_img)
-    except Exception:
-        pass
+    pil_img = None
+    cropped_pil = None
+    mask_img = None
+    final_pil = None
 
-    pil_img = pil_img.convert("RGB")
-    
-    # 2. Downscale the source image to max 1024px to prevent large coordinate buffers
-    w, h = pil_img.size
-    if max(w, h) > 1024:
-        scale = 1024.0 / float(max(w, h))
-        pil_img = pil_img.resize((int(w * scale), int(h * scale)), Image.Resampling.BILINEAR)
+    try:
+        # 1. Load image and normalize EXIF orientation
+        pil_img = Image.open(io.BytesIO(image_bytes))
+        try:
+            pil_img = ImageOps.exif_transpose(pil_img)
+        except Exception:
+            pass
+
+        pil_img = pil_img.convert("RGB")
         w, h = pil_img.size
 
-    # box_2d: [ymin, xmin, ymax, xmax] normalized on a 0-1000 scale
-    ymin, xmin, ymax, xmax = box_2d
-    top = int((ymin / 1000.0) * h)
-    left = int((xmin / 1000.0) * w)
-    bottom = int((ymax / 1000.0) * h)
-    right = int((xmax / 1000.0) * w)
+        # 2. Extract bounding box [ymin, xmin, ymax, xmax] (0-1000 scale)
+        ymin, xmin, ymax, xmax = box_2d
+        top = int((ymin / 1000.0) * h)
+        left = int((xmin / 1000.0) * w)
+        bottom = int((ymax / 1000.0) * h)
+        right = int((xmax / 1000.0) * w)
 
-    box_w = max(10, right - left)
-    box_h = max(10, bottom - top)
+        box_w = max(10, right - left)
+        box_h = max(10, bottom - top)
 
-    # Padding calculation
-    pad_ratio_x = 0.12 if not is_accessory else 0.20
-    pad_ratio_y = 0.10 if not is_accessory else 0.15
+        pad_ratio_x = 0.08 if not is_accessory else 0.15
+        pad_ratio_y = 0.08 if not is_accessory else 0.12
 
-    pad_x = int(box_w * pad_ratio_x)
-    pad_y = int(box_h * pad_ratio_y)
+        pad_x = int(box_w * pad_ratio_x)
+        pad_y = int(box_h * pad_ratio_y)
 
-    crop_top = max(0, top - pad_y)
-    crop_left = max(0, left - pad_x)
-    crop_bottom = min(h, bottom + pad_y)
-    crop_right = min(w, right + pad_x)
+        crop_top = max(0, top - pad_y)
+        crop_left = max(0, left - pad_x)
+        crop_bottom = min(h, bottom + pad_y)
+        crop_right = min(w, right + pad_x)
 
-    cropped_pil = pil_img.crop((crop_left, crop_top, crop_right, crop_bottom))
-    
-    # 3. Downscale the cropped segment to max 800px before rembg processing
-    cw, ch = cropped_pil.size
-    if max(cw, ch) > 800:
-        scale = 800.0 / float(max(cw, ch))
-        cropped_pil = cropped_pil.resize((int(cw * scale), int(ch * scale)), Image.Resampling.BILINEAR)
+        cropped_pil = pil_img.crop((crop_left, crop_top, crop_right, crop_bottom))
+
+        # 3. Downscale crop to 512px max for fast inference
         cw, ch = cropped_pil.size
+        max_dim = 512
+        if max(cw, ch) > max_dim:
+            scale = max_dim / float(max(cw, ch))
+            cropped_pil = cropped_pil.resize((int(cw * scale), int(ch * scale)), Image.Resampling.BILINEAR)
+            cw, ch = cropped_pil.size
 
-    orig_rgb = np.array(cropped_pil, dtype=np.uint8)
-
-    buf_in = io.BytesIO()
-    cropped_pil.save(buf_in, format="PNG")
-    cropped_bytes = buf_in.getvalue()
-
-    is_white_item = any(
-        w_name in primary_color.lower()
-        for w_name in ["white", "ivory", "cream", "linen", "light", "beige", "oatmeal"]
-    )
-
-    try:
-        from rembg import remove
-
-        session = _get_rembg_session()
-        mask_bytes = remove(
-            cropped_bytes,
-            session=session,
-            alpha_matting=False,
-            only_mask=True
+        is_white_item = any(
+            w_name in primary_color.lower()
+            for w_name in ["white", "ivory", "cream", "linen", "light", "beige", "oatmeal"]
         )
 
-        mask_img = Image.open(io.BytesIO(mask_bytes)).convert("L")
-        if mask_img.size != (cw, ch):
-            mask_img = mask_img.resize((cw, ch), Image.Resampling.BILINEAR)
+        # 4. Remove background using lightweight u2netp session
+        from rembg import remove
+        session = _get_rembg_session()
 
-        mask_np = np.array(mask_img, dtype=np.uint8)
-        foreground_ratio = np.count_nonzero(mask_np > 25) / float(cw * ch)
+        # Run segmentation
+        isolated_res = remove(
+            cropped_pil,
+            session=session,
+            alpha_matting=False
+        )
 
-        if is_white_item and foreground_ratio < 0.30:
-            solid_mask = np.full((ch, cw), 255, dtype=np.uint8)
-        else:
-            _, binary_mask = cv2.threshold(mask_np, 20, 255, cv2.THRESH_BINARY)
-            contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            solid_mask = np.zeros_like(binary_mask)
+        if is_white_item:
+            # Opacity guard for light/white garments
+            alpha_channel = np.array(isolated_res.split()[-1])
+            foreground_ratio = np.count_nonzero(alpha_channel > 25) / float(cw * ch)
 
-            if contours:
-                contours = sorted(contours, key=cv2.contourArea, reverse=True)
-                main_area = cv2.contourArea(contours[0])
-                valid_contours = [c for c in contours if cv2.contourArea(c) >= (main_area * 0.05)]
-                cv2.drawContours(solid_mask, valid_contours, -1, 255, thickness=cv2.FILLED)
+            if foreground_ratio < 0.25:
+                # Fallback to solid image if mask over-clipped the white garment
+                final_pil = cropped_pil.convert("RGBA")
             else:
-                solid_mask = binary_mask
+                final_pil = isolated_res
+        else:
+            final_pil = isolated_res
 
-        r, g, b = orig_rgb[:, :, 0], orig_rgb[:, :, 1], orig_rgb[:, :, 2]
-        rgba_out = np.dstack((r, g, b, solid_mask))
-        final_pil = Image.fromarray(rgba_out, mode="RGBA")
+        buf_out = io.BytesIO()
+        final_pil.save(buf_out, format="PNG", optimize=True)
+        return buf_out.getvalue()
 
     except Exception as ex:
-        print(f"rembg isolation fallback: {ex}")
-        final_pil = cropped_pil
+        print(f"[REMBG ISOLATION FALLBACK] {ex}", flush=True)
+        if cropped_pil:
+            fallback_buf = io.BytesIO()
+            cropped_pil.save(fallback_buf, format="PNG")
+            return fallback_buf.getvalue()
+        return image_bytes
 
-    buf_out = io.BytesIO()
-    final_pil.save(buf_out, format="PNG", optimize=True)
-
-    # 4. Immediate Garbage Collection to free RAM
-    del orig_rgb
-    gc.collect()
-
-    return buf_out.getvalue()
+    finally:
+        # Immediate memory cleanup
+        for obj in [pil_img, cropped_pil, mask_img, final_pil]:
+            if obj:
+                try:
+                    obj.close()
+                except Exception:
+                    pass
+        gc.collect()
 
 
 async def async_crop_and_isolate_garment(
@@ -193,4 +184,6 @@ def rotate_image_bytes(image_bytes: bytes, degrees: int = 90) -> bytes:
     buf_out = io.BytesIO()
     fmt = "PNG" if pil_img.mode == "RGBA" else "JPEG"
     rotated_img.save(buf_out, format=fmt)
+    pil_img.close()
+    rotated_img.close()
     return buf_out.getvalue()
