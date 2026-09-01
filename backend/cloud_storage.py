@@ -27,7 +27,7 @@ def ensure_bucket_exists():
 
 def upload_image_bytes(image_bytes: bytes, destination_path: str, mime_type: str = "image/jpeg") -> str:
     """
-    Uploads raw image bytes to Supabase Storage and returns the public CDN URL.
+    Uploads raw image bytes to Supabase Storage and returns a clean public CDN URL.
     Safely strips duplicate bucket prefixes from destination_path.
     """
     if not supabase:
@@ -47,9 +47,16 @@ def upload_image_bytes(image_bytes: bytes, destination_path: str, mime_type: str
             file_options={"content-type": mime_type, "upsert": "true"}
         )
 
-        # Retrieve CDN public URL
-        public_url = supabase.storage.from_(STORAGE_BUCKET).get_public_url(clean_path)
-        return public_url
+        # Retrieve CDN public URL and extract raw string safely
+        url_res = supabase.storage.from_(STORAGE_BUCKET).get_public_url(clean_path)
+        if isinstance(url_res, dict):
+            public_url = url_res.get("publicUrl") or url_res.get("public_url")
+        elif hasattr(url_res, "public_url"):
+            public_url = url_res.public_url
+        else:
+            public_url = str(url_res)
+
+        return public_url or resolve_image_url(clean_path)
 
     except Exception as e:
         print(f"[STORAGE UPLOAD ERROR] {clean_path}: {e}", flush=True)
@@ -60,15 +67,20 @@ def upload_image_bytes(image_bytes: bytes, destination_path: str, mime_type: str
 def resolve_image_url(raw_url: str) -> str:
     """
     Guarantees any legacy relative path or key is converted
-    into a valid public URL or base64 URI.
+    into a valid public URL or base64 URI without double-nesting the bucket.
     """
     if not raw_url:
         return ""
     if raw_url.startswith("data:") or raw_url.startswith("http://") or raw_url.startswith("https://"):
         return raw_url
+
     if SUPABASE_URL:
         clean_path = raw_url.lstrip("/")
+        # Prevent double-inserting bucket name if already present in relative path
+        if clean_path.startswith(f"{STORAGE_BUCKET}/"):
+            clean_path = clean_path[len(STORAGE_BUCKET) + 1:]
         return f"{SUPABASE_URL}/storage/v1/object/public/{STORAGE_BUCKET}/{clean_path}"
+
     return raw_url
 
 

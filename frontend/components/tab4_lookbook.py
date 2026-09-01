@@ -86,7 +86,6 @@ def render(user_id: str, profile: dict):
         look_id = look.get("id", idx)
         col = cols[idx % 2]
 
-        # Clean title strictly without hardcoded emojis
         raw_title = look.get("title", "Curated Look")
         clean_title = raw_title.replace("🥂", "").replace("✨", "").strip()
 
@@ -95,7 +94,7 @@ def render(user_id: str, profile: dict):
                 st.markdown(f"#### {clean_title}")
                 st.caption(f"**Occasion:** {look.get('occasion', 'General')} • **Date:** {look.get('created_at', 'Recent')}")
 
-                # Garment cards display with fallback image handler
+                # Garment cards display with native Streamlit rendering
                 items = look.get("items", [])
                 if items:
                     item_cols = st.columns(min(len(items), 3))
@@ -104,17 +103,27 @@ def render(user_id: str, profile: dict):
                             img_url = itm.get("image_url", "")
                             sub_title = itm.get("sub_type", "Garment")
                             if img_url:
-                                st.markdown(
-                                    f"""
-                                    <div style="background: #F4F6F0; border-radius: 8px; padding: 6px; display: flex; align-items: center; justify-content: center; min-height: 110px; margin-bottom: 4px; border: 1px solid #E2E8DC;">
-                                        <img src="{img_url}" style="max-height: 95px; max-width: 100%; object-fit: contain;" onerror="this.onerror=null; this.src='https://placehold.co/95x95/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}';" />
-                                    </div>
-                                    """,
-                                    unsafe_allow_html=True
+                                try:
+                                    st.image(img_url, use_container_width=True)
+                                except Exception:
+                                    st.image(
+                                        f"https://placehold.co/120x120/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}",
+                                        use_container_width=True
+                                    )
+                            else:
+                                st.image(
+                                    f"https://placehold.co/120x120/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}",
+                                    use_container_width=True
                                 )
                             st.caption(f"**{sub_title}**")
                 elif look.get("image_url"):
-                    st.image(look.get("image_url"), use_container_width=True)
+                    try:
+                        st.image(look.get("image_url"), use_container_width=True)
+                    except Exception:
+                        st.image(
+                            "https://placehold.co/300x300/F4F6F0/7D9D64?text=Curated+Look",
+                            use_container_width=True
+                        )
 
                 rationale_text = look.get("styling_notes") or look.get("rationale")
                 if rationale_text:

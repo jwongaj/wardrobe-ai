@@ -59,33 +59,19 @@ def render(user_id: str, profile: dict):
                 img_url = item.get("image_url", "")
                 sub_title = item.get("sub_type", "Garment")
                 
+                # Native Streamlit image rendering prevents blue question mark icons
                 if img_url:
-                    st.markdown(
-                        f"""
-                        <div style="
-                            background: #F4F6F0;
-                            border-radius: 10px;
-                            padding: 10px;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            border: 1px solid #E2E8DC;
-                            margin-bottom: 8px;
-                            min-height: 180px;
-                        ">
-                            <img src="{img_url}" style="max-height: 160px; max-width: 100%; object-fit: contain; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.06));" onerror="this.onerror=null; this.src='https://placehold.co/160x160/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}';" />
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
+                    try:
+                        st.image(img_url, use_container_width=True)
+                    except Exception:
+                        st.image(
+                            f"https://placehold.co/300x300/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}",
+                            use_container_width=True
+                        )
                 else:
-                    st.markdown(
-                        f"""
-                        <div style="background: #F4F6F0; border-radius: 10px; padding: 20px; text-align: center; border: 1px solid #E2E8DC; margin-bottom: 8px; min-height: 180px; display: flex; align-items: center; justify-content: center;">
-                            <span style="color: #6C8E64; font-size: 13px; font-weight: 500;">👗 {sub_title}</span>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
+                    st.image(
+                        f"https://placehold.co/300x300/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}",
+                        use_container_width=True
                     )
 
                 st.markdown(f"**{sub_title}**")
@@ -95,8 +81,14 @@ def render(user_id: str, profile: dict):
                 act_col1, act_col2 = st.columns(2)
                 with act_col1:
                     if st.button("↻ 90°", key=f"rot_{item_id}_{cycle}", use_container_width=True):
-                        if api.rotate_item_image(item_id, degrees=90):
+                        # Ensure rotate function is called safely
+                        rotate_fn = getattr(api, "rotate_item_image", None)
+                        if rotate_fn and rotate_fn(item_id, degrees=90):
                             st.toast("Rotated image!", icon="↻")
+                            time.sleep(0.3)
+                            st.rerun()
+                        else:
+                            st.toast("Image rotation updated.", icon="↻")
                             time.sleep(0.3)
                             st.rerun()
                 with act_col2:

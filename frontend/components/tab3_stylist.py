@@ -17,12 +17,14 @@ def render(user_id: str, profile: dict):
     st.caption(f"Curating outfits tailored for **{profile.get('name', user_id)}**")
 
     # =========================================================================
-    # 1. REDESIGNED WEATHER BUBBLE & TRAVEL OVERRIDE
+    # 1. WEATHER CONTEXT & TRAVEL OVERRIDE
     # =========================================================================
     if "weather_override" not in st.session_state:
         st.session_state.weather_override = None
     if "custom_location_query" not in st.session_state:
         st.session_state.custom_location_query = ""
+    if "rejected_outfit_combos" not in st.session_state:
+        st.session_state.rejected_outfit_combos = []
 
     # Determine Weather Context
     if st.session_state.weather_override:
@@ -37,7 +39,7 @@ def render(user_id: str, profile: dict):
     cond = weather_data.get("condition", "Pleasant")
     is_rain = weather_data.get("is_raining", False)
 
-    # Redesigned Minimalist Modern Weather Bubble
+    # Minimalist Modern Weather Header
     st.markdown(
         f"""
         <div style="
@@ -147,6 +149,9 @@ def render(user_id: str, profile: dict):
 
             st.session_state["active_curation"] = curation
             st.session_state["curation_event"] = event
+            st.session_state["curation_time_of_day"] = time_of_day
+            st.session_state["curation_desired_vibe"] = desired_vibe
+            st.rerun()
 
     # =========================================================================
     # 3. CURATED LOOK & INSTANT SAVE
@@ -187,14 +192,12 @@ def render(user_id: str, profile: dict):
                         img_url = it.get("image_url", "")
                         sub_title = it.get("sub_type", "Garment")
                         if img_url:
-                            st.markdown(
-                                f"""
-                                <div style="background: #F4F6F0; border-radius: 8px; padding: 8px; display: flex; align-items: center; justify-content: center; min-height: 150px; border: 1px solid #E2E8DC; margin-bottom: 6px;">
-                                    <img src="{img_url}" style="max-height: 140px; max-width: 100%; object-fit: contain;" onerror="this.onerror=null; this.src='https://placehold.co/140x140/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}';" />
-                                </div>
-                                """,
-                                unsafe_allow_html=True
-                            )
+                            try:
+                                st.image(img_url, use_container_width=True)
+                            except Exception:
+                                st.image(f"https://placehold.co/140x140/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}", use_container_width=True)
+                        else:
+                            st.image(f"https://placehold.co/140x140/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}", use_container_width=True)
                         st.markdown(f"**{sub_title}**")
                         st.caption(f"{it.get('primary_color', 'Neutral')} • {it.get('fabric_material', 'Fabric')}")
 
@@ -214,7 +217,7 @@ def render(user_id: str, profile: dict):
             else:
                 st.error("Failed to save to database. Please check Supabase connection.")
 
-        # Emoji-only feedback bar
+        # Rate and Auto-Regenerate Feedback Bar
         st.write("")
         with st.container(border=True):
             st.markdown("##### 💬 Rate this Ensemble")
@@ -223,11 +226,46 @@ def render(user_id: str, profile: dict):
                 e1, e2 = st.columns(2)
                 with e1:
                     if st.button("👍", help="Love this look", use_container_width=True, key="thumb_up_btn"):
-                        api.submit_binary_feedback(user_id=user_id, rating="thumbs_up", chips=st.session_state.get("stylist_chips_selected", []), outfit_items=matched_items, outfit_id=curation.get("id"))
-                        st.toast("Feedback recorded!", icon="👍")
+                        api.submit_binary_feedback(
+                            user_id=user_id,
+                            rating="thumbs_up",
+                            chips=st.session_state.get("stylist_chips_selected", []),
+                            outfit_items=matched_items,
+                            outfit_id=curation.get("id")
+                        )
+                        st.toast("Feedback recorded! Algorithm adjusted.", icon="👍")
                 with e2:
-                    if st.button("👎", help="Not for me", use_container_width=True, key="thumb_down_btn"):
-                        api.submit_binary_feedback(user_id=user_id, rating="thumbs_down", chips=st.session_state.get("stylist_chips_selected", []), outfit_items=matched_items, outfit_id=curation.get("id"))
-                        st.toast("Feedback recorded.", icon="👎")
+                    if st.button("👎", help="Not for me - auto-generate new styling", use_container_width=True, key="thumb_down_btn"):
+                        # 1. Submit negative feedback
+                        api.submit_binary_feedback(
+                            user_id=user_id,
+                            rating="thumbs_down",
+                            chips=st.session_state.get("stylist_chips_selected", []),
+                            outfit_items=matched_items,
+                            outfit_id=curation.get("id")
+                        )
+                        # 2. Record rejected item IDs
+                        rejected_ids = [it.get("id") or it.get("db_id") for it in matched_items]
+                        st.session_state.rejected_outfit_combos.append(rejected_ids)
+
+                        # 3. Auto-regenerate fresh look
+                        with st.spinner("Refining style algorithm and styling an alternative look..."):
+                            new_curation = api.curate_outfit(
+                                user_id=user_id,
+                                user_gender=profile.get("gender", "Womenswear"),
+                                event_description=st.session_state.get("curation_event", event),
+                                time_of_day=st.session_state.get("curation_time_of_day", time_of_day),
+                                desired_vibe=st.session_state.get("curation_desired_vibe", desired_vibe),
+                                weather=weather_data,
+                                available_items=items
+                            )
+                            if "error" not in new_curation:
+                                st.session_state["active_curation"] = new_curation
+                                st.toast("New ensemble styled!", icon="✨")
+                                time.sleep(0.3)
+                                st.rerun()
+                            else:
+                                st.error(f"Regeneration error: {new_curation['error']}")
+
             with fb_col2:
                 st.pills("Reaction Tags", CHIP_OPTIONS, selection_mode="multi", label_visibility="collapsed", key="stylist_chips_selected")

@@ -242,3 +242,13 @@ def purge_unlinked_storage() -> Dict[str, Any]:
     except Exception:
         pass
     return {"success": True, "count": 0}
+
+def rotate_item_image(item_id: Any, degrees: int = 90) -> bool:
+    try:
+        clean_id = str(item_id)
+        with httpx.Client(timeout=20.0) as client:
+            res = client.post(f"{API_BASE_URL}/api/v1/wardrobe/items/{clean_id}/rotate?degrees={degrees}")
+            st.cache_data.clear()
+            return res.status_code == 200
+    except Exception:
+        return False

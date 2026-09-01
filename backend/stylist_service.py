@@ -7,30 +7,37 @@ from model_router import STYLIST_CASCADE, generate_with_fallback
 def generate_fallback_outfit(
     items: List[Dict[str, Any]],
     temp_c: float,
-    target_formality: float = 4.5
+    target_formality: float = 4.5,
+    avoid_ids: Optional[List[Any]] = None
 ) -> Dict[str, Any]:
     """
     Deterministic rule-based wardrobe builder when LLM quotas are exhausted.
-    Sorts items by formality proximity to the user's learned baseline.
+    Sorts items by formality proximity while skipping avoided/rejected IDs.
     """
-    # Sort helper to favor pieces closest to user's learned formality baseline
+    avoid_set = set(str(i) for i in (avoid_ids or []))
+
     def formality_diff(it):
         return abs(float(it.get("formality", 5)) - target_formality)
 
+    available_items = [
+        it for it in items 
+        if str(it.get("id") or it.get("db_id")) not in avoid_set
+    ] or items
+
     tops = sorted(
-        [it for it in items if str(it.get("garment_type", "")).lower() in ["top", "shirt", "blouse", "knitwear", "t-shirt"]],
+        [it for it in available_items if str(it.get("garment_type", "")).lower() in ["top", "shirt", "blouse", "knitwear", "t-shirt"]],
         key=formality_diff
     )
     bottoms = sorted(
-        [it for it in items if str(it.get("garment_type", "")).lower() in ["bottom", "trousers", "pants", "skirt", "jeans", "shorts"]],
+        [it for it in available_items if str(it.get("garment_type", "")).lower() in ["bottom", "trousers", "pants", "skirt", "jeans", "shorts"]],
         key=formality_diff
     )
     dresses = sorted(
-        [it for it in items if str(it.get("garment_type", "")).lower() in ["dress", "one-piece", "one_piece", "jumpsuit"]],
+        [it for it in available_items if str(it.get("garment_type", "")).lower() in ["dress", "one-piece", "one_piece", "jumpsuit"]],
         key=formality_diff
     )
     outerwear = sorted(
-        [it for it in items if str(it.get("garment_type", "")).lower() in ["outerwear", "jacket", "coat", "blazer"]],
+        [it for it in available_items if str(it.get("garment_type", "")).lower() in ["outerwear", "jacket", "coat", "blazer"]],
         key=formality_diff
     )
 
@@ -40,8 +47,8 @@ def generate_fallback_outfit(
     elif tops and bottoms:
         selected_ids.append(tops[0].get("id") or tops[0].get("db_id"))
         selected_ids.append(bottoms[0].get("id") or bottoms[0].get("db_id"))
-    elif items:
-        selected_ids = [items[0].get("id") or items[0].get("db_id")]
+    elif available_items:
+        selected_ids = [available_items[0].get("id") or available_items[0].get("db_id")]
 
     if temp_c <= 16.0 and outerwear:
         selected_ids.append(outerwear[0].get("id") or outerwear[0].get("db_id"))
@@ -62,10 +69,12 @@ async def generate_outfit_recommendation(
     desired_vibe: str,
     weather: Dict[str, Any],
     items: List[Dict[str, Any]],
-    taste_profile: Optional[Dict[str, Any]] = None
+    taste_profile: Optional[Dict[str, Any]] = None,
+    disliked_combinations: Optional[List[List[Any]]] = None
 ) -> Dict[str, Any]:
     """
-    Curates a personalized ensemble using Gemini with dynamic Pillar 2 taste memory.
+    Curates a personalized ensemble using Gemini with dynamic Pillar 2 taste memory
+    and negative constraints to prevent duplicate recommendations.
     """
     # 1. Compact payload to minimize input tokens
     catalog_summary = []
@@ -94,7 +103,21 @@ async def generate_outfit_recommendation(
     avoided_tags = ", ".join(taste.get("avoided_tags", ["overly loud prints", "stiff corporate"]))
     aesthetic_summary = taste.get("aesthetic_summary", "Clean, intentional styling with relaxed proportions.")
 
-    # 3. Construct Reasoning Prompt with Memory Loop
+    # 3. Build Negative Constraints from Disliked Outfits
+    dislike_clause = ""
+    flattened_disliked_ids = []
+    if disliked_combinations:
+        formatted_combos = [f"Combination #{i+1}: {c}" for i, c in enumerate(disliked_combinations)]
+        dislike_clause = f"""
+STRICT NEGATIVE CONSTRAINTS (PREVIOUSLY REJECTED / DISLIKED):
+- The user has actively thumbed-down and rejected these exact item pairings:
+  {chr(10).join(formatted_combos)}
+- CRITICAL: You MUST NOT return the same grouping or core pairing. Suggest an alternative, fresh curation.
+"""
+        for combo in disliked_combinations:
+            flattened_disliked_ids.extend(combo)
+
+    # 4. Construct Reasoning Prompt with Memory Loop
     prompt = f"""
 You are an expert luxury capsule wardrobe stylist and personal taste curator.
 
@@ -111,7 +134,7 @@ PILLAR 2 TASTE MEMORY & LEARNED CONSTRAINTS:
 - Active Aesthetic Labels: {active_tags}.
 - Strictly Avoided Styles: {avoided_tags}.
 - High Affinity: Prioritize pieces whose fabrics, cuts, and colors align with the active labels.
-
+{dislike_clause}
 WARDROBE ITEMS (Select strictly from this list):
 {json.dumps(catalog_summary, separators=(',', ':'))}
 
@@ -119,6 +142,7 @@ CURATION RULES:
 1. Select complementary items strictly from the provided list.
 2. Build a complete look: [Top + Bottom OR Dress] + optional [Outerwear if {temp_c}°C warrants] + optional [Footwear / Accessories].
 3. Ensure pieces harmonize in silhouette volume, formality balance, and tonal palette.
+4. If a previously rejected combo is present above, pivot to an alternative combination of tops/bottoms/dresses.
 
 Return ONLY a valid JSON object matching this schema:
 {{
@@ -129,12 +153,13 @@ Return ONLY a valid JSON object matching this schema:
 }}
 """
 
-    # Run through dynamic model cascade
+    # Run through dynamic model cascade with temperature=0.7 for creative variety
     result = generate_with_fallback(
         client=client,
         model_cascade=STYLIST_CASCADE,
         prompt=prompt,
-        max_output_tokens=500
+        max_output_tokens=500,
+        temperature=0.7
     )
 
     if result["success"] and result["data"]:
@@ -145,4 +170,9 @@ Return ONLY a valid JSON object matching this schema:
         return data
 
     print(f"[Stylist] All AI cascade models exhausted ({result.get('error')}). Using deterministic engine.")
-    return generate_fallback_outfit(items, temp_c, target_formality=target_formality)
+    return generate_fallback_outfit(
+        items,
+        temp_c,
+        target_formality=target_formality,
+        avoid_ids=flattened_disliked_ids
+    )
