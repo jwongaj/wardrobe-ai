@@ -115,7 +115,7 @@ async def ingest_wardrobe_image(
             raise HTTPException(status_code=422, detail="No garments or accessories detected.")
 
         existing_items = database.get_clothing_items_by_user(user_id)
-        processed_records = []
+        staged_records = []
         pending_duplicates = []
         timestamp = int(time.time())
 
@@ -135,8 +135,8 @@ async def ingest_wardrobe_image(
                 "sunnies", "bag", "tote", "shoe", "footwear", "watch", "belt", "hat"
             ])
 
-            print(f"[INGEST] Isolating background [{idx+1}/{len(detected_items)}]: {sub_type}...", flush=True)
-            isolated_png_bytes = await image_processor.async_crop_and_isolate_garment(
+            print(f"[INGEST] Cropping [{idx+1}/{len(detected_items)}]: {sub_type}...", flush=True)
+            isolated_jpeg_bytes = await image_processor.async_crop_and_isolate_garment(
                 image_bytes=raw_bytes,
                 box_2d=box_2d,
                 garment_type=garment_type,
@@ -144,11 +144,11 @@ async def ingest_wardrobe_image(
                 is_accessory=is_acc
             )
 
-            filename = f"items/{user_id}_{timestamp}_{idx}.png"
+            filename = f"items/{user_id}_{timestamp}_{idx}.jpg"
             image_url = cloud_storage.upload_image_bytes(
-                image_bytes=isolated_png_bytes,
+                image_bytes=isolated_jpeg_bytes,
                 destination_path=filename,
-                mime_type="image/png"
+                mime_type="image/jpeg"
             )
 
             item_payload = {
@@ -172,15 +172,14 @@ async def ingest_wardrobe_image(
                 item_payload["matched_existing"] = matched_dup
                 pending_duplicates.append(item_payload)
             else:
-                saved = database.save_clothing_item(item_payload)
-                print(f"[INGEST SAVED] Successfully stored '{sub_type}'", flush=True)
-                processed_records.append(saved)
+                # Stage item for user verification in Tab 1
+                staged_records.append(item_payload)
 
         return {
             "status": "success",
             "detected_count": len(detected_items),
-            "ingested_count": len(processed_records),
-            "items": processed_records,
+            "ingested_count": len(staged_records),
+            "items": staged_records,
             "pending_duplicates": pending_duplicates
         }
 
@@ -193,9 +192,12 @@ async def ingest_wardrobe_image(
 
 @app.post("/api/v1/wardrobe/item")
 async def save_single_wardrobe_item(item: Dict[str, Any] = Body(...)):
-    """Saves a single approved item to the user's database."""
-    item.pop("matched_existing", None)
-    saved = database.save_clothing_item(item)
+    """Saves a single approved item to the user's persistent database."""
+    clean_item = {k: v for k, v in item.items() if k not in ["matched_existing", "stage_id"]}
+    if "id" in clean_item and isinstance(clean_item["id"], str) and not clean_item["id"].isdigit():
+        clean_item.pop("id", None)
+
+    saved = database.save_clothing_item(clean_item)
     return {"status": "success", "item": saved}
 
 
@@ -227,7 +229,7 @@ async def rotate_wardrobe_item(item_id: str, degrees: int = Query(90)):
         header, b64data = image_url.split(",", 1)
         raw_img_bytes = base64.b64decode(b64data)
         rotated_bytes = image_processor.rotate_image_bytes(raw_img_bytes, degrees=degrees)
-        new_url = cloud_storage.upload_image_bytes(rotated_bytes, f"rotated_{item_id}.png", "image/png")
+        new_url = cloud_storage.upload_image_bytes(rotated_bytes, f"rotated_{item_id}.jpg", "image/jpeg")
     else:
         clean_url = image_url.split("?")[0]
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -235,7 +237,7 @@ async def rotate_wardrobe_item(item_id: str, degrees: int = Query(90)):
             if img_res.status_code != 200:
                 raise HTTPException(status_code=400, detail="Failed to fetch image.")
         rotated_bytes = image_processor.rotate_image_bytes(img_res.content, degrees=degrees)
-        new_url = cloud_storage.upload_image_bytes(rotated_bytes, f"rotated_{item_id}.png", "image/png")
+        new_url = cloud_storage.upload_image_bytes(rotated_bytes, f"rotated_{item_id}.jpg", "image/jpeg")
 
     database.update_clothing_item_image(item_id, new_url)
     return {"status": "success", "new_image_url": new_url}
@@ -358,7 +360,7 @@ async def upload_worn_outfit(
         raise HTTPException(status_code=400, detail="Empty photo upload.")
 
     timestamp = int(time.time())
-    file_name = f"worn_looks/{user_id}_{timestamp}.png"
+    file_name = f"worn_looks/{user_id}_{timestamp}.jpg"
     image_url = cloud_storage.upload_image_bytes(raw_bytes, file_name, mime_type="image/jpeg")
 
     record = {
