@@ -6,6 +6,7 @@ backend_dir = Path(__file__).resolve().parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
+import os
 import time
 import httpx
 from typing import Optional, List, Dict, Any
@@ -17,26 +18,10 @@ from config import genai_client
 import database
 import cloud_storage
 import stylist_service
-
-from image_processor import (
-    async_crop_and_isolate_garment,
-    get_storage_path,
-    STORAGE_BUCKET_NAME
-)
-
-# In your upload handler:
-storage_path = get_storage_path(user_id=user_id, file_name=file_id, is_worn_look=False)
-# Result: "items/jasmine_wong/file_123.png"
-
-supabase_client.storage.from_(STORAGE_BUCKET_NAME).upload(
-    path=storage_path,
-    file=isolated_png_bytes,
-    file_options={"content-type": "image/png"}
-)
-image_url = supabase_client.storage.from_(STORAGE_BUCKET_NAME).get_public_url(storage_path)
-
+import image_processor
 import gemini_service
 import weather_service
+
 from schemas import (
     OutfitRequest,
     IngestionResponse,
@@ -45,9 +30,6 @@ from schemas import (
     UpdateTasteTagsPayload,
     TasteProfileResponse
 )
-
-import os
-import uvicorn
 
 # Initialize database schema/store if applicable
 if hasattr(database, "init_db"):
@@ -68,9 +50,14 @@ app.add_middleware(
 )
 
 
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return {"status": "online", "service": "WoLo Wardrobe Backend", "timestamp": int(time.time())}
+    """Lightweight health check endpoint accepting GET and HEAD for Render discovery."""
+    return {
+        "status": "online",
+        "service": "WoLo Wardrobe Backend",
+        "timestamp": int(time.time())
+    }
 
 
 # =========================================================================
@@ -206,7 +193,7 @@ async def update_item_image_url(item_id: str, payload: Dict[str, str] = Body(...
 
 
 @app.post("/api/v1/wardrobe/items/{item_id}/rotate")
-async def rotate_wardrobe_item(item_id: str, degrees: int = 90):
+async def rotate_wardrobe_item(item_id: str, degrees: int = Query(90)):
     """Rotates an existing garment image and updates storage."""
     items = database.get_clothing_items_by_user("") if not hasattr(database, "CLOSET_STORE") else database.CLOSET_STORE
     target_item = None
@@ -394,7 +381,7 @@ async def get_live_weather(request: Request, location: Optional[str] = None):
 
     if hasattr(weather_service, "fetch_weather_data"):
         return await weather_service.fetch_weather_data(manual_location=location, client_ip=client_ip)
-    
+
     return {
         "city": "Sydney",
         "display_location": "Sydney, AU",
@@ -407,28 +394,17 @@ async def get_live_weather(request: Request, location: Optional[str] = None):
 
 
 # =========================================================================
-# LOCAL EXECUTION ENTRYPOINT (Render runs via Uvicorn CLI start command)
+# LOCAL EXECUTION ENTRYPOINT
 # =========================================================================
 
 if __name__ == "__main__":
-    import os
     import uvicorn
 
     port = int(os.environ.get("PORT", 10000))
     print(f"=== LAUNCHING UVICORN ON 0.0.0.0:{port} ===", flush=True)
 
     try:
-        # Pass the application as an import string, not the object directly
-        uvicorn.run("backend.main:app", host="0.0.0.0", port=port, log_level="info")
+        uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")
     except Exception as e:
         print(f"CRITICAL STARTUP ERROR: {e}", flush=True)
         raise e
-
-@app.api_route("/", methods=["GET", "HEAD"])
-def health_check():
-    """Lightweight health check endpoint accepting both GET and HEAD."""
-    return {
-        "status": "online",
-        "service": "WoLo Wardrobe Backend",
-        "time": time.time()
-    }
