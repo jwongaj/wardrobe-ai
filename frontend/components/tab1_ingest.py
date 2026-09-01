@@ -2,7 +2,7 @@ import streamlit as st
 import time
 from components import api
 
-GARMENT_CATEGORIES = ["top", "bottom", "dress", "outerwear", "shoes", "accessory"]
+GARMENT_CATEGORIES = ["top", "bottom", "dress", "outerwear", "shoes", "accessory", "jewelry"]
 
 
 def render(user_id: str, profile: dict):
@@ -78,7 +78,7 @@ def render(user_id: str, profile: dict):
     # 2. FILE UPLOADER
     # =========================================================================
     uploaded_files = st.file_uploader(
-        "Upload garment photos or flat-lays\n\n200MB per file • JPG, PNG, HEIC, WEBP",
+        "Upload garment photos or flat-lays\n\nJPG, PNG, HEIC, WEBP",
         type=["jpg", "jpeg", "png", "heic", "webp"],
         accept_multiple_files=True,
         key=f"uploader_{st.session_state.uploader_key}"
@@ -89,20 +89,31 @@ def render(user_id: str, profile: dict):
         if st.button("✨ Detect & Stage Items", type="primary", use_container_width=True):
             staged = []
             dups = []
+            errors = []
+
             with st.spinner("Analyzing garments, isolating masks, and checking duplicates..."):
                 for file_obj in uploaded_files:
                     res = api.ingest_image(file_obj, user_id=user_id, user_gender=profile.get("gender", "Womenswear"))
+                    
                     if res.get("status") == "success":
                         for itm in res.get("items", []):
                             if "stage_id" not in itm:
                                 itm["stage_id"] = f"stg_{int(time.time() * 1000)}_{len(staged)}"
                             staged.append(itm)
                         dups.extend(res.get("pending_duplicates", []))
+                    else:
+                        err_msg = res.get("error", "Unknown error occurred during ingestion.")
+                        errors.append(f"**{file_obj.name}**: {err_msg}")
 
-            st.session_state.staged_ingestion_items.extend(staged)
-            st.session_state.pending_duplicates.extend(dups)
-            st.session_state.uploader_key += 1
-            st.rerun()
+            if errors:
+                for err in errors:
+                    st.error(f"❌ Ingestion Error: {err}")
+
+            if staged or dups:
+                st.session_state.staged_ingestion_items.extend(staged)
+                st.session_state.pending_duplicates.extend(dups)
+                st.session_state.uploader_key += 1
+                st.rerun()
 
     # =========================================================================
     # 3. STAGED REVIEW & EDIT BEFORE FINAL COMMIT
