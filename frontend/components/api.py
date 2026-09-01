@@ -40,7 +40,6 @@ def _compress_upload_buffer(file_bytes: bytes, max_dim: int = 1536) -> tuple[byt
         img.save(out_buf, format="JPEG", quality=85, optimize=True)
         return out_buf.getvalue(), "image/jpeg"
     except Exception:
-        # Fallback to raw bytes if PIL cannot parse the file format directly
         return file_bytes, "image/jpeg"
 
 
@@ -58,13 +57,11 @@ def ingest_image(file, user_id: str, user_gender: str) -> Dict[str, Any]:
         raw_bytes = file.getvalue() if hasattr(file, "getvalue") else file.read()
         file_name = getattr(file, "name", "upload.jpg")
 
-        # 1. Compress before sending over HTTP
         compressed_bytes, mime_type = _compress_upload_buffer(raw_bytes, max_dim=1536)
 
         files = {"file": (file_name, compressed_bytes, mime_type)}
         data = {"user_id": user_id, "user_gender": user_gender}
 
-        # 2. Dedicated generous timeout configuration
         timeout_config = httpx.Timeout(CLIENT_TIMEOUT, connect=30.0)
         with httpx.Client(timeout=timeout_config) as client:
             res = client.post(f"{API_BASE_URL}/api/v1/wardrobe/ingest", files=files, data=data)
@@ -82,11 +79,16 @@ def ingest_image(file, user_id: str, user_gender: str) -> Dict[str, Any]:
 
 def save_single_item(item_payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
-        clean_payload = {k: v for k, v in item_payload.items() if k != "matched_existing"}
+        # 1. Clean UI artifacts before transmitting
+        clean_payload = {k: v for k, v in item_payload.items() if k not in ["matched_existing", "stage_id"]}
+        if "id" in clean_payload and isinstance(clean_payload["id"], str) and not clean_payload["id"].isdigit():
+            clean_payload.pop("id", None)
+
         with httpx.Client(timeout=20.0) as client:
             res = client.post(f"{API_BASE_URL}/api/v1/wardrobe/item", json=clean_payload)
+            # 2. Invalidate cache so Tab 2 pulls fresh Supabase rows immediately
+            st.cache_data.clear()
             if res.status_code == 200:
-                st.cache_data.clear()
                 return res.json()
             return {"status": "error", "error": f"HTTP {res.status_code}: {res.text}"}
     except Exception as e:
@@ -97,15 +99,15 @@ def update_item_image(item_id: str, image_url: str) -> Dict[str, Any]:
     try:
         with httpx.Client(timeout=20.0) as client:
             res = client.put(f"{API_BASE_URL}/api/v1/wardrobe/items/{item_id}/image", json={"image_url": image_url})
+            st.cache_data.clear()
             if res.status_code == 200:
-                st.cache_data.clear()
                 return res.json()
             return {"status": "error", "error": f"HTTP {res.status_code}: {res.text}"}
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def get_clothing_items(user_id: str) -> List[Dict[str, Any]]:
     try:
         with httpx.Client(timeout=10.0) as client:
@@ -121,8 +123,8 @@ def delete_clothing_item(item_id: str) -> bool:
     try:
         with httpx.Client(timeout=10.0) as client:
             res = client.delete(f"{API_BASE_URL}/api/v1/wardrobe/items/{item_id}")
+            st.cache_data.clear()
             if res.status_code == 200:
-                st.cache_data.clear()
                 return True
             return False
     except Exception:
@@ -146,6 +148,7 @@ def submit_binary_feedback(user_id: str, rating: str, chips: List[str], outfit_i
     try:
         with httpx.Client(timeout=15.0) as client:
             res = client.post(f"{API_BASE_URL}/api/v1/taste/feedback", json=payload)
+            st.cache_data.clear()
             return res.json() if res.status_code == 200 else {"status": "error"}
     except Exception as e:
         return {"status": "error", "error": str(e)}
@@ -156,6 +159,7 @@ def update_taste_tags(user_id: str, active_tags: List[str], avoided_tags: Option
     try:
         with httpx.Client(timeout=15.0) as client:
             res = client.post(f"{API_BASE_URL}/api/v1/taste/profile/tags", json=payload)
+            st.cache_data.clear()
             return res.json().get("profile", {}) if res.status_code == 200 else {}
     except Exception as e:
         return {"error": str(e)}
@@ -229,11 +233,11 @@ def delete_saved_outfit(outfit_id: Any) -> bool:
 
 
 def purge_unlinked_storage() -> Dict[str, Any]:
-    """Safe fallback helper for admin storage purge."""
     try:
         with httpx.Client(timeout=15.0) as client:
             res = client.post(f"{API_BASE_URL}/api/v1/admin/purge-storage")
             if res.status_code == 200:
+                st.cache_data.clear()
                 return res.json()
     except Exception:
         pass
