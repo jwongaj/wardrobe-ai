@@ -394,10 +394,15 @@ async def get_live_weather(request: Request, location: Optional[str] = None):
 # =========================================================================
 
 if __name__ == "__main__":
+    import os
+    import uvicorn
+
     port = int(os.environ.get("PORT", 10000))
-    print(f"=== LAUNCHING UVICORN ON PORT {port} ===")
+    print(f"=== LAUNCHING UVICORN ON 0.0.0.0:{port} ===", flush=True)
+
     try:
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+        # Pass the application as an import string, not the object directly
+        uvicorn.run("backend.main:app", host="0.0.0.0", port=port, log_level="info")
     except Exception as e:
-        print(f"CRITICAL STARTUP ERROR: {e}")
+        print(f"CRITICAL STARTUP ERROR: {e}", flush=True)
         raise e
