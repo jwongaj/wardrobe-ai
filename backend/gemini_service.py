@@ -178,12 +178,12 @@ def detect_and_tag_garments(
         return {"items": []}
 
     except Exception as e:
-        # Fallback to gemini-1.5-flash if gemini-3.6-flash meets any temporary issue
-        if target_model != "gemini-1.5-flash":
-            print(f"Retrying vision ingestion with fallback model 'gemini-1.5-flash' due to: {e}")
+        # Fallback to gemini-2.0-flash if the primary model hits quota
+        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            print("Primary model rate limited. Retrying with 'gemini-2.0-flash'...")
             try:
                 response = client.models.generate_content(
-                    model="gemini-1.5-flash",
+                    model="gemini-2.0-flash",
                     contents=[
                         types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"),
                         prompt
@@ -196,11 +196,10 @@ def detect_and_tag_garments(
                 cleaned_text = _clean_json_text(response.text)
                 return json.loads(cleaned_text)
             except Exception as inner_e:
-                print(f"Fallback vision ingestion failed: {inner_e}")
+                print(f"Fallback model failed: {inner_e}")
 
         print(f"\n--- GEMINI VISION INGESTION ERROR ({target_model}) ---")
         traceback.print_exc()
-        print("------------------------------------------------------\n")
         raise RuntimeError(f"Gemini Vision error: {str(e)}")
 
 
