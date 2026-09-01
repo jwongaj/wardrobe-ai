@@ -10,11 +10,7 @@ def generate_fallback_outfit(
     target_formality: float = 4.5,
     avoid_ids: Optional[List[Any]] = None
 ) -> Dict[str, Any]:
-    """
-    Deterministic rule-based wardrobe builder when LLM quotas are exhausted.
-    Sorts items by formality proximity while skipping avoided/rejected IDs.
-    """
-    avoid_set = set(str(i) for i in (avoid_ids or []))
+    avoid_set = {str(i) for i in (avoid_ids or [])}
 
     def formality_diff(it):
         return abs(float(it.get("formality", 5)) - target_formality)
@@ -54,8 +50,8 @@ def generate_fallback_outfit(
         selected_ids.append(outerwear[0].get("id") or outerwear[0].get("db_id"))
 
     return {
-        "outfit_name": "Classic Balanced Capsule (Rule-Based Mode)",
-        "styling_reasoning": "A clean, functional pairing constructed from your wardrobe essentials while AI services are refreshing.",
+        "outfit_name": "Fresh Alternative Capsule",
+        "styling_reasoning": "A clean rotation styled from your alternative wardrobe pieces.",
         "weather_alignment": f"Selected core layers suited for {temp_c}°C ambient conditions.",
         "selected_item_ids": [i for i in selected_ids if i is not None]
     }
@@ -72,14 +68,10 @@ async def generate_outfit_recommendation(
     taste_profile: Optional[Dict[str, Any]] = None,
     disliked_combinations: Optional[List[List[Any]]] = None
 ) -> Dict[str, Any]:
-    """
-    Curates a personalized ensemble using Gemini with dynamic Pillar 2 taste memory
-    and negative constraints to prevent duplicate recommendations.
-    """
-    # 1. Compact payload to minimize input tokens
+    # 1. Compact catalog representation
     catalog_summary = []
     for it in items:
-        item_id = it.get("id") or it.get("db_id")
+        item_id = str(it.get("id") or it.get("db_id"))
         catalog_summary.append({
             "id": item_id,
             "type": it.get("garment_type", "garment"),
@@ -96,64 +88,58 @@ async def generate_outfit_recommendation(
     condition = weather.get("condition", "Mild")
     is_rain = weather.get("is_raining", False)
 
-    # 2. Extract Pillar 2 Dynamic Taste Signals
     taste = taste_profile or {}
-    target_formality = taste.get("target_formality", 4.5)
-    active_tags = ", ".join(taste.get("active_tags", ["Luminous Minimalist", "Relaxed Tailoring"]))
-    avoided_tags = ", ".join(taste.get("avoided_tags", ["overly loud prints", "stiff corporate"]))
-    aesthetic_summary = taste.get("aesthetic_summary", "Clean, intentional styling with relaxed proportions.")
+    active_tags = ", ".join(taste.get("active_tags", ["Luminous Minimalist"]))
 
-    # 3. Build Negative Constraints from Disliked Outfits
-    dislike_clause = ""
-    flattened_disliked_ids = []
+    # 2. Strict Negative Constraint Formatting
+    banned_instructions = ""
+    flattened_avoid_ids = []
     if disliked_combinations:
-        formatted_combos = [f"Combination #{i+1}: {c}" for i, c in enumerate(disliked_combinations)]
-        dislike_clause = f"""
-STRICT NEGATIVE CONSTRAINTS (PREVIOUSLY REJECTED / DISLIKED):
-- The user has actively thumbed-down and rejected these exact item pairings:
-  {chr(10).join(formatted_combos)}
-- CRITICAL: You MUST NOT return the same grouping or core pairing. Suggest an alternative, fresh curation.
-"""
+        disliked_str_list = []
         for combo in disliked_combinations:
-            flattened_disliked_ids.extend(combo)
+            clean_combo = [str(x) for x in combo]
+            disliked_str_list.append(str(clean_combo))
+            flattened_avoid_ids.extend(clean_combo)
 
-    # 4. Construct Reasoning Prompt with Memory Loop
+        banned_instructions = f"""
+CRITICAL NEGATIVE CONSTRAINTS (USER REJECTED THESE COMBINATIONS):
+The user explicitly disliked and thumbed down these exact item combinations:
+{chr(10).join(disliked_str_list)}
+You MUST NOT return any of these exact combinations again. You must choose DIFFERENT items from the wardrobe.
+"""
+
+    # 3. Dynamic Prompt with High Priority on User's Immediate Vibe
     prompt = f"""
-You are an expert luxury capsule wardrobe stylist and personal taste curator.
+You are an expert personal wardrobe stylist.
 
-CLIENT CONTEXT:
-- Silhouette Preference: {user_gender}
-- Occasion / Venue: {event_description}
+IMMEDIATE REQUEST PRIORITY (MUST FOLLOW ABOVE ALL ELSE):
+- Target Vibe / Mood: "{desired_vibe}" (If the user requests "{desired_vibe}", prioritize items with colors, cuts, and styles matching "{desired_vibe}". Do NOT default to all-white/monochrome unless explicitly requested).
+- Occasion / Destination: {event_description}
 - Time of Day: {time_of_day}
-- Target Vibe: {desired_vibe}
-- Climate: {location} | {temp_c}°C (feels {feels_like}°C), {condition}, Rain: {is_rain}
+- Weather: {location} | {temp_c}°C (feels {feels_like}°C), {condition}, Rain: {is_rain}
 
-PILLAR 2 TASTE MEMORY & LEARNED CONSTRAINTS:
-- Aesthetic Identity: "{aesthetic_summary}"
-- Learned Formality Baseline: ~{target_formality}/10 (balance ease and intentional structure).
-- Active Aesthetic Labels: {active_tags}.
-- Strictly Avoided Styles: {avoided_tags}.
-- High Affinity: Prioritize pieces whose fabrics, cuts, and colors align with the active labels.
-{dislike_clause}
-WARDROBE ITEMS (Select strictly from this list):
+LONG-TERM TASTE SIGNALS:
+- Baseline Taste: {active_tags}
+
+{banned_instructions}
+
+AVAILABLE WARDROBE PIECES:
 {json.dumps(catalog_summary, separators=(',', ':'))}
 
 CURATION RULES:
-1. Select complementary items strictly from the provided list.
-2. Build a complete look: [Top + Bottom OR Dress] + optional [Outerwear if {temp_c}°C warrants] + optional [Footwear / Accessories].
-3. Ensure pieces harmonize in silhouette volume, formality balance, and tonal palette.
-4. If a previously rejected combo is present above, pivot to an alternative combination of tops/bottoms/dresses.
+1. Return items strictly from the list above using their exact "id".
+2. Build a complete look: (Top + Bottom) OR (Dress) + optional Outerwear/Shoes/Accessories.
+3. Strongly reflect "{desired_vibe}" in the selection.
 
-Return ONLY a valid JSON object matching this schema:
+Return ONLY a JSON object:
 {{
-  "outfit_name": "Editorial look title",
-  "styling_reasoning": "2 sentences explaining the texture harmony, silhouette balance, and why this fits the occasion and learned taste.",
-  "weather_alignment": "1 sentence on thermal comfort and weather suitability for {temp_c}°C in {location}.",
+  "outfit_name": "Descriptive Look Title",
+  "styling_reasoning": "2 sentences explaining why this look embodies '{desired_vibe}' and harmonizes with the occasion.",
+  "weather_alignment": "1 sentence on climate comfort.",
   "selected_item_ids": ["id1", "id2"]
 }}
 """
 
-    # Run through dynamic model cascade
     result = generate_with_fallback(
         client=client,
         model_cascade=STYLIST_CASCADE,
@@ -164,14 +150,12 @@ Return ONLY a valid JSON object matching this schema:
     if result["success"] and result["data"]:
         data = result["data"]
         if "selected_item_ids" in data:
-            data["selected_item_ids"] = [i for i in data["selected_item_ids"] if i is not None]
+            data["selected_item_ids"] = [str(i) for i in data["selected_item_ids"] if i is not None]
         data["_model_used"] = result["model_used"]
         return data
 
-    print(f"[Stylist] All AI cascade models exhausted ({result.get('error')}). Using deterministic engine.")
     return generate_fallback_outfit(
         items,
         temp_c,
-        target_formality=target_formality,
-        avoid_ids=flattened_disliked_ids
+        avoid_ids=flattened_avoid_ids
     )

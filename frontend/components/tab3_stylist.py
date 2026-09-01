@@ -16,15 +16,15 @@ def render(user_id: str, profile: dict):
     st.markdown("### ✨ AI Styling Salon")
     st.caption(f"Curating outfits tailored for **{profile.get('name', user_id)}**")
 
+    # State initialization
     if "weather_override" not in st.session_state:
         st.session_state.weather_override = None
     if "custom_location_query" not in st.session_state:
         st.session_state.custom_location_query = ""
-    if "rejected_outfit_combos" not in st.session_state:
-        st.session_state.rejected_outfit_combos = []
-    if "curation_version" not in st.session_state:
-        st.session_state.curation_version = 0
+    if "curation_counter" not in st.session_state:
+        st.session_state.curation_counter = 0
 
+    # Weather lookup
     if st.session_state.weather_override:
         weather_data = st.session_state.weather_override
     else:
@@ -37,6 +37,7 @@ def render(user_id: str, profile: dict):
     cond = weather_data.get("condition", "Pleasant")
     is_rain = weather_data.get("is_raining", False)
 
+    # Weather Header
     st.markdown(
         f"""
         <div style="
@@ -70,52 +71,12 @@ def render(user_id: str, profile: dict):
         unsafe_allow_html=True
     )
 
-    with st.expander("✈️ Traveling or Override Climate", expanded=False):
-        c_city1, c_city2, c_city3 = st.columns([2.5, 1.2, 1.5])
-        with c_city1:
-            city_input = st.text_input("Destination City / Country", value=st.session_state.custom_location_query, placeholder="e.g. Paris, Tokyo, London")
-        with c_city2:
-            st.write("&nbsp;")
-            if st.button("Search City", use_container_width=True):
-                st.session_state.custom_location_query = city_input
-                st.session_state.weather_override = None
-                st.rerun()
-        with c_city3:
-            st.write("&nbsp;")
-            if st.button("↺ Reset Location", use_container_width=True, help="Reset to auto-detected local device location"):
-                st.session_state.custom_location_query = ""
-                st.session_state.weather_override = None
-                st.toast("Reset to device location!", icon="📍")
-                st.rerun()
-
-        st.markdown("**Manual Weather Context Sliders:**")
-        m1, m2, m3 = st.columns(3)
-        with m1:
-            man_temp = st.slider("Temperature (°C)", -5, 45, int(temp_c))
-        with m2:
-            man_cond = st.selectbox("Sky Condition", ["Sunny / Clear", "Partly Cloudy", "Overcast", "Windy", "Rainy"])
-        with m3:
-            man_rain = st.checkbox("Rain Expected", value=is_rain)
-
-        if st.button("Apply Climate Override", type="secondary"):
-            st.session_state.weather_override = {
-                "display_location": city_name if city_name != "Current Location" else "Custom Climate",
-                "city": city_name,
-                "temperature_c": float(man_temp),
-                "feels_like_c": float(man_temp),
-                "condition": man_cond,
-                "is_raining": man_rain
-            }
-            st.toast("Applied climate override!", icon="🌤️")
-            st.rerun()
-
-    st.markdown("---")
-
     items = api.get_clothing_items(user_id)
     if len(items) < 2:
         st.warning("You need at least 2 pieces in your wardrobe vault. Head to **Tab 1** to ingest your garments.")
         return
 
+    # User Inputs
     col1, col2 = st.columns(2)
     with col1:
         event = st.text_input("Occasion / Destination", value="Weekend brunch & coastal walk")
@@ -125,7 +86,7 @@ def render(user_id: str, profile: dict):
         desired_vibe = st.text_input("Desired Vibe / Mood", value=profile.get("default_style", "Luminous Minimalist"))
 
     if st.button("✨ Style Ensemble", type="primary", use_container_width=True):
-        with st.spinner("Curating ensemble with climate & taste memory..."):
+        with st.spinner(f"Curating ensemble for '{desired_vibe}'..."):
             curation = api.curate_outfit(
                 user_id=user_id,
                 user_gender=profile.get("gender", "Womenswear"),
@@ -144,16 +105,14 @@ def render(user_id: str, profile: dict):
             st.session_state["curation_event"] = event
             st.session_state["curation_time_of_day"] = time_of_day
             st.session_state["curation_desired_vibe"] = desired_vibe
-            st.session_state.curation_version += 1
+            st.session_state.curation_counter += 1
             st.rerun()
 
-    # =========================================================================
-    # CURATED LOOK DISPLAY (Keyed by curation_version)
-    # =========================================================================
-    if "active_curation" in st.session_state:
+    # Outfit Display Block
+    if "active_curation" in st.session_state and st.session_state["active_curation"]:
         curation = st.session_state["active_curation"]
-        v = st.session_state.curation_version
-        
+        count = st.session_state.curation_counter
+
         raw_name = curation.get("outfit_name") or curation.get("title", "Curated Ensemble")
         outfit_name = raw_name.replace("🥂", "").replace("✨", "").strip()
         selected_ids = [str(x) for x in curation.get("selected_item_ids", [])]
@@ -198,7 +157,7 @@ def render(user_id: str, profile: dict):
                         st.caption(f"{it.get('primary_color', 'Neutral')} • {it.get('fabric_material', 'Fabric')}")
 
         st.write("")
-        if st.button("🔖 Save Look to Lookbook", type="primary", use_container_width=True, key=f"save_look_btn_{v}"):
+        if st.button("🔖 Save Look to Lookbook", type="primary", use_container_width=True, key=f"save_btn_{count}"):
             save_payload = {
                 "user_id": user_id,
                 "title": outfit_name,
@@ -209,9 +168,9 @@ def render(user_id: str, profile: dict):
                 "image_url": matched_items[0].get("image_url") if matched_items else ""
             }
             if api.save_look(save_payload):
-                st.toast("Ensemble saved to your Lookbook (Tab 4)!", icon="🔖")
+                st.toast("Ensemble saved to Lookbook!", icon="🔖")
             else:
-                st.error("Failed to save to database. Please check Supabase connection.")
+                st.error("Failed to save to database.")
 
         # Rate and Auto-Regenerate Feedback Bar
         st.write("")
@@ -221,50 +180,44 @@ def render(user_id: str, profile: dict):
             with fb_col1:
                 e1, e2 = st.columns(2)
                 with e1:
-                    if st.button("👍", help="Love this look", use_container_width=True, key=f"thumb_up_{v}"):
+                    if st.button("👍", help="Love this look", use_container_width=True, key=f"thumb_up_{count}"):
                         api.submit_binary_feedback(
                             user_id=user_id,
                             rating="thumbs_up",
-                            chips=st.session_state.get(f"stylist_chips_{v}", []),
+                            chips=st.session_state.get(f"chips_{count}", []),
                             outfit_items=matched_items,
                             outfit_id=curation.get("id")
                         )
                         st.toast("Taste memory reinforced!", icon="👍")
                 with e2:
-                    if st.button("👎", help="Dislike & auto-generate new styling", use_container_width=True, key=f"thumb_down_{v}"):
-                        # 1. Submit negative feedback to persist in Supabase
+                    if st.button("👎", help="Dislike & auto-generate alternative", use_container_width=True, key=f"thumb_down_{count}"):
+                        # 1. Submit dislike feedback to update taste profile & banned combinations
                         api.submit_binary_feedback(
                             user_id=user_id,
                             rating="thumbs_down",
-                            chips=st.session_state.get(f"stylist_chips_{v}", []),
+                            chips=st.session_state.get(f"chips_{count}", []),
                             outfit_items=matched_items,
                             outfit_id=curation.get("id")
                         )
-                        
-                        # 2. Trigger immediate re-curation
-                        st.session_state["trigger_auto_restyle"] = True
-                        st.rerun()
+
+                        # 2. Re-curate immediately with explicit dislike memory
+                        with st.spinner("Styling a completely fresh look..."):
+                            fresh_curation = api.curate_outfit(
+                                user_id=user_id,
+                                user_gender=profile.get("gender", "Womenswear"),
+                                event_description=st.session_state.get("curation_event", event),
+                                time_of_day=st.session_state.get("curation_time_of_day", time_of_day),
+                                desired_vibe=st.session_state.get("curation_desired_vibe", desired_vibe),
+                                weather=weather_data,
+                                available_items=items
+                            )
+                            if "error" not in fresh_curation:
+                                st.session_state["active_curation"] = fresh_curation
+                                st.session_state.curation_counter += 1
+                                st.toast("New alternative look styled!", icon="✨")
+                                st.rerun()
+                            else:
+                                st.error(f"Error generating alternative: {fresh_curation['error']}")
 
             with fb_col2:
-                st.pills("Reaction Tags", CHIP_OPTIONS, selection_mode="multi", label_visibility="collapsed", key=f"stylist_chips_{v}")
-
-                # Top-level auto-restyle handler outside button scope to avoid UI freeze
-    if st.session_state.get("trigger_auto_restyle", False):
-        st.session_state["trigger_auto_restyle"] = False
-        with st.spinner("Refining style algorithm and styling an alternative look..."):
-            new_curation = api.curate_outfit(
-                user_id=user_id,
-                user_gender=profile.get("gender", "Womenswear"),
-                event_description=st.session_state.get("curation_event", event),
-                time_of_day=st.session_state.get("curation_time_of_day", time_of_day),
-                desired_vibe=st.session_state.get("curation_desired_vibe", desired_vibe),
-                weather=weather_data,
-                available_items=items
-            )
-            if "error" not in new_curation:
-                st.session_state["active_curation"] = new_curation
-                st.session_state.curation_version += 1
-                st.toast("New ensemble styled!", icon="✨")
-                st.rerun()
-            else:
-                st.error(f"Regeneration error: {new_curation['error']}")
+                st.pills("Reaction Tags", CHIP_OPTIONS, selection_mode="multi", label_visibility="collapsed", key=f"chips_{count}")
