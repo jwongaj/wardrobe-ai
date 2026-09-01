@@ -91,7 +91,7 @@ async def generate_outfit_recommendation(
     taste = taste_profile or {}
     active_tags = ", ".join(taste.get("active_tags", ["Luminous Minimalist"]))
 
-    # 2. Strict Negative Constraint Formatting
+    # 2. Strict Negative Constraint Formatting with Anti-Lazy-Pivot Rules
     banned_instructions = ""
     flattened_avoid_ids = []
     if disliked_combinations:
@@ -102,18 +102,22 @@ async def generate_outfit_recommendation(
             flattened_avoid_ids.extend(clean_combo)
 
         banned_instructions = f"""
-CRITICAL NEGATIVE CONSTRAINTS (USER REJECTED THESE COMBINATIONS):
-The user explicitly disliked and thumbed down these exact item combinations:
+CRITICAL NEGATIVE CONSTRAINTS (USER REJECTED THESE EXACT COMBINATIONS):
+The user explicitly thumbed down and rejected these previous item pairings:
 {chr(10).join(disliked_str_list)}
-You MUST NOT return any of these exact combinations again. You must choose DIFFERENT items from the wardrobe.
+
+ANTI-LAZY-PIVOT RULES (STRICT COMPLIANCE REQUIRED):
+1. You MUST NOT retain the exact same core clothing foundation (do NOT keep the same top + bottom or dress and simply add/change a necklace, jewelry, shoes, or accessory).
+2. You MUST replace at least one primary anchor garment (choose a distinctly different top, bottom, or dress).
+3. If the user previously disliked a look, pivot the overall silhouette and color balance noticeably.
 """
 
     # 3. Dynamic Prompt with High Priority on User's Immediate Vibe
     prompt = f"""
-You are an expert personal wardrobe stylist.
+You are an expert personal wardrobe stylist and luxury capsule curator.
 
 IMMEDIATE REQUEST PRIORITY (MUST FOLLOW ABOVE ALL ELSE):
-- Target Vibe / Mood: "{desired_vibe}" (If the user requests "{desired_vibe}", prioritize items with colors, cuts, and styles matching "{desired_vibe}". Do NOT default to all-white/monochrome unless explicitly requested).
+- Target Vibe / Mood: "{desired_vibe}" (CRITICAL: If the user requests "{desired_vibe}", prioritize items with colors, cuts, and aesthetics that actively embody "{desired_vibe}". Do NOT default to neutral or all-white unless explicitly requested).
 - Occasion / Destination: {event_description}
 - Time of Day: {time_of_day}
 - Weather: {location} | {temp_c}°C (feels {feels_like}°C), {condition}, Rain: {is_rain}
@@ -129,9 +133,9 @@ AVAILABLE WARDROBE PIECES:
 CURATION RULES:
 1. Return items strictly from the list above using their exact "id".
 2. Build a complete look: (Top + Bottom) OR (Dress) + optional Outerwear/Shoes/Accessories.
-3. Strongly reflect "{desired_vibe}" in the selection.
+3. Strongly reflect the requested vibe "{desired_vibe}" across color harmony and garment silhouette.
 
-Return ONLY a JSON object:
+Return ONLY a JSON object matching this schema:
 {{
   "outfit_name": "Descriptive Look Title",
   "styling_reasoning": "2 sentences explaining why this look embodies '{desired_vibe}' and harmonizes with the occasion.",
