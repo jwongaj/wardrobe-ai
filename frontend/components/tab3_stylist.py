@@ -23,6 +23,8 @@ def render(user_id: str, profile: dict):
         st.session_state.custom_location_query = ""
     if "curation_counter" not in st.session_state:
         st.session_state.curation_counter = 0
+    if "session_rejected_ids" not in st.session_state:
+        st.session_state.session_rejected_ids = set()
 
     # Weather lookup
     if st.session_state.weather_override:
@@ -191,7 +193,12 @@ def render(user_id: str, profile: dict):
                         st.toast("Taste memory reinforced!", icon="👍")
                 with e2:
                     if st.button("👎", help="Dislike & auto-generate alternative", use_container_width=True, key=f"thumb_down_{count}"):
-                        # 1. Submit dislike feedback to update taste profile & banned combinations
+                        # 1. Track core rejected items
+                        rejected_item_ids = [str(it.get("id") or it.get("db_id")) for it in matched_items]
+                        for r_id in rejected_item_ids:
+                            st.session_state.session_rejected_ids.add(r_id)
+
+                        # 2. Submit dislike feedback to database
                         api.submit_binary_feedback(
                             user_id=user_id,
                             rating="thumbs_down",
@@ -200,7 +207,16 @@ def render(user_id: str, profile: dict):
                             outfit_id=curation.get("id")
                         )
 
-                        # 2. Re-curate immediately with explicit dislike memory
+                        # 3. Filter candidate items to force a real garment change
+                        fresh_candidate_items = [
+                            it for it in items
+                            if str(it.get("id") or it.get("db_id")) not in st.session_state.session_rejected_ids
+                        ]
+                        # Fallback to full items if wardrobe is small (<2 alternative items)
+                        if len(fresh_candidate_items) < 2:
+                            fresh_candidate_items = items
+
+                        # 4. Re-curate immediately with fresh items and clear the previous view
                         with st.spinner("Styling a completely fresh look..."):
                             fresh_curation = api.curate_outfit(
                                 user_id=user_id,
@@ -209,7 +225,7 @@ def render(user_id: str, profile: dict):
                                 time_of_day=st.session_state.get("curation_time_of_day", time_of_day),
                                 desired_vibe=st.session_state.get("curation_desired_vibe", desired_vibe),
                                 weather=weather_data,
-                                available_items=items
+                                available_items=fresh_candidate_items
                             )
                             if "error" not in fresh_curation:
                                 st.session_state["active_curation"] = fresh_curation
