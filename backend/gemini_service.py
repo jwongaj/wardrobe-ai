@@ -32,7 +32,7 @@ MODEL_ROUTER = {
     "vision_ingest": os.getenv("MODEL_VISION_INGEST", "gemini-3.6-flash"),
     
     # High-reasoning model for wardrobe logic, color harmony, and climate styling
-    "styling_curator": os.getenv("MODEL_STYLING_CURATOR", "gemini-1.5-pro"),
+    "styling_curator": os.getenv("MODEL_STYLING_CURATOR", "gemini-2.5-pro"),
     
     # Fast semantic deduplication
     "dedup_matcher": os.getenv("MODEL_DEDUP", "gemini-3.6-flash")
