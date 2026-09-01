@@ -1,5 +1,6 @@
 import os
 import io
+import time
 import json
 import traceback
 import re
@@ -8,7 +9,7 @@ from PIL import Image, ImageOps
 from google import genai
 from google.genai import types
 
-# Auto-repair malformed LLM JSON output
+# Auto-repair malformed LLM JSON output if library exists
 try:
     import json_repair
 except ImportError:
@@ -25,14 +26,14 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 # =====================================================================
-# DYNAMIC TASK MODEL ROUTER (Updated for Current Availability)
+# DYNAMIC TASK MODEL ROUTER
 # =====================================================================
 MODEL_ROUTER = {
     # High-throughput multimodal vision for bounding boxes & feature extraction
     "vision_ingest": os.getenv("MODEL_VISION_INGEST", "gemini-3.6-flash"),
     
     # High-reasoning model for wardrobe logic, color harmony, and climate styling
-    "styling_curator": os.getenv("MODEL_STYLING_CURATOR", "gemini-2.5-pro"),
+    "styling_curator": os.getenv("MODEL_STYLING_CURATOR", "gemini-1.5-pro"),
     
     # Fast semantic deduplication
     "dedup_matcher": os.getenv("MODEL_DEDUP", "gemini-3.6-flash")
@@ -58,7 +59,6 @@ def _ensure_rgb_jpeg_bytes(raw_bytes: bytes, max_dim: int = 1536) -> bytes:
     """
     pil_img = Image.open(io.BytesIO(raw_bytes))
 
-    # Correct iPhone orientation so bounding box coordinates remain aligned
     try:
         pil_img = ImageOps.exif_transpose(pil_img)
     except Exception:
@@ -77,7 +77,7 @@ def _ensure_rgb_jpeg_bytes(raw_bytes: bytes, max_dim: int = 1536) -> bytes:
 
 
 def compress_for_vision(raw_bytes: bytes, max_dim: int = 1024) -> bytes:
-    """Public helper for image compression (used in lookbook and storage)."""
+    """Public helper for image compression."""
     return _ensure_rgb_jpeg_bytes(raw_bytes, max_dim=max_dim)
 
 
@@ -92,6 +92,7 @@ def detect_and_tag_garments(
     Vision Ingestion Engine:
     Detects all visible garments and accessories in a photograph, returning bounding
     boxes [ymin, xmin, ymax, xmax] (0-1000 scale) and complete fashion metadata.
+    Includes automated backoff retry for transient 429 rate limits.
     """
     data = image_bytes or image_data or raw_bytes
     if not data:
@@ -146,61 +147,52 @@ def detect_and_tag_garments(
 
     target_model = MODEL_ROUTER.get("vision_ingest", "gemini-3.6-flash")
 
-    try:
-        response = client.models.generate_content(
-            model=target_model,
-            contents=[
-                types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"),
-                prompt
-            ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.1
-            )
-        )
-
-        cleaned_text = _clean_json_text(response.text)
-
-        parsed = None
-        if json_repair:
-            try:
-                parsed = json_repair.loads(cleaned_text)
-            except Exception:
-                pass
-
-        if parsed is None:
-            parsed = json.loads(cleaned_text)
-
-        if isinstance(parsed, dict) and "items" in parsed:
-            return parsed
-        elif isinstance(parsed, list):
-            return {"items": parsed}
-        return {"items": []}
-
-    except Exception as e:
-        # Fallback to gemini-2.0-flash if the primary model hits quota
-        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-            print("Primary model rate limited. Retrying with 'gemini-2.0-flash'...")
-            try:
-                response = client.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=[
-                        types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"),
-                        prompt
-                    ],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1
-                    )
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=target_model,
+                contents=[
+                    types.Part.from_bytes(data=jpeg_bytes, mime_type="image/jpeg"),
+                    prompt
+                ],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1
                 )
-                cleaned_text = _clean_json_text(response.text)
-                return json.loads(cleaned_text)
-            except Exception as inner_e:
-                print(f"Fallback model failed: {inner_e}")
+            )
 
-        print(f"\n--- GEMINI VISION INGESTION ERROR ({target_model}) ---")
-        traceback.print_exc()
-        raise RuntimeError(f"Gemini Vision error: {str(e)}")
+            cleaned_text = _clean_json_text(response.text)
+
+            parsed = None
+            if json_repair:
+                try:
+                    parsed = json_repair.loads(cleaned_text)
+                except Exception:
+                    pass
+
+            if parsed is None:
+                parsed = json.loads(cleaned_text)
+
+            if isinstance(parsed, dict) and "items" in parsed:
+                return parsed
+            elif isinstance(parsed, list):
+                return {"items": parsed}
+            return {"items": []}
+
+        except Exception as e:
+            err_msg = str(e)
+            if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) and attempt < max_retries - 1:
+                delay_match = re.search(r"retry in (\d+(\.\d+)?)s", err_msg)
+                wait_seconds = float(delay_match.group(1)) + 1.0 if delay_match else 15.0
+                print(f"[Gemini Vision 429 Quota Delay] Waiting {wait_seconds:.1f}s before retry {attempt + 2}/{max_retries}...", flush=True)
+                time.sleep(wait_seconds)
+                continue
+
+            print(f"\n--- GEMINI VISION INGESTION ERROR ({target_model}) ---")
+            traceback.print_exc()
+            print("------------------------------------------------------\n")
+            raise RuntimeError(f"Gemini Vision error: {str(e)}")
 
 
 def curate_outfit(
@@ -280,38 +272,49 @@ def curate_outfit(
 
     target_model = MODEL_ROUTER.get("styling_curator", "gemini-1.5-pro")
 
-    try:
-        response = client.models.generate_content(
-            model=target_model,
-            contents=[prompt],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.3
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=target_model,
+                contents=[prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.3
+                )
             )
-        )
-        cleaned_text = _clean_json_text(response.text)
+            cleaned_text = _clean_json_text(response.text)
 
-        parsed = None
-        if json_repair:
-            try:
-                parsed = json_repair.loads(cleaned_text)
-            except Exception:
-                pass
+            parsed = None
+            if json_repair:
+                try:
+                    parsed = json_repair.loads(cleaned_text)
+                except Exception:
+                    pass
 
-        if parsed is None:
-            parsed = json.loads(cleaned_text)
+            if parsed is None:
+                parsed = json.loads(cleaned_text)
 
-        return parsed
-    except Exception as e:
-        print(f"\n--- GEMINI STYLING EXCEPTION ({target_model}) ---")
-        traceback.print_exc()
-        print("-------------------------------------------------\n")
-        return {
-            "outfit_name": "Classic Minimalist Ensemble",
-            "selected_item_ids": [m["id"] for m in manifest[:3]],
-            "styling_reasoning": "Curated an essential combination from your available wardrobe.",
-            "weather_alignment": "Comfortable and well-balanced for the day."
-        }
+            return parsed
+
+        except Exception as e:
+            err_msg = str(e)
+            if ("429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg) and attempt < max_retries - 1:
+                delay_match = re.search(r"retry in (\d+(\.\d+)?)s", err_msg)
+                wait_seconds = float(delay_match.group(1)) + 1.0 if delay_match else 15.0
+                print(f"[Gemini Styling 429 Quota Delay] Waiting {wait_seconds:.1f}s before retry {attempt + 2}/{max_retries}...", flush=True)
+                time.sleep(wait_seconds)
+                continue
+
+            print(f"\n--- GEMINI STYLING EXCEPTION ({target_model}) ---")
+            traceback.print_exc()
+            print("-------------------------------------------------\n")
+            return {
+                "outfit_name": "Curated Ensemble",
+                "selected_item_ids": [m["id"] for m in manifest[:3]],
+                "styling_reasoning": "Curated a balanced selection from your catalog.",
+                "weather_alignment": "Comfortable for the current conditions."
+            }
 
 
 def find_potential_duplicate(new_item_desc: Dict[str, Any], existing_items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -326,8 +329,11 @@ def find_potential_duplicate(new_item_desc: Dict[str, Any], existing_items: List
     new_sub_words = set(re.findall(r'\w+', new_sub))
     new_color_words = set(re.findall(r'\w+', new_color))
 
-    # Cut/fit distinctions that should NEVER automatically merge
-    DISTINCT_FITS = [{"wide", "wide-leg", "baggy", "flare"}, {"skinny", "slim", "tight"}, {"straight", "classic"}]
+    DISTINCT_FITS = [
+        {"wide", "wide-leg", "baggy", "flare"},
+        {"skinny", "slim", "tight"},
+        {"straight", "classic"}
+    ]
 
     for existing in existing_items:
         ex_cat = str(existing.get("garment_type", "")).lower().strip()
@@ -344,7 +350,6 @@ def find_potential_duplicate(new_item_desc: Dict[str, Any], existing_items: List
 
         ex_sub_words = set(re.findall(r'\w+', ex_sub))
 
-        # If both are jeans/pants but have conflicting fit types (e.g. wide-leg vs skinny), NOT a duplicate
         is_conflicting_fit = False
         for fit_set in DISTINCT_FITS:
             if bool(new_sub_words & fit_set) and not bool(ex_sub_words & fit_set) and any(bool(ex_sub_words & other_fit) for other_fit in DISTINCT_FITS if other_fit != fit_set):
@@ -354,7 +359,6 @@ def find_potential_duplicate(new_item_desc: Dict[str, Any], existing_items: List
         if is_conflicting_fit:
             continue
 
-        # Check for word overlaps
         common_words = (new_sub_words & ex_sub_words) - {"top", "bottom", "piece", "garment", "light", "dark"}
         if len(common_words) >= 1:
             return existing
