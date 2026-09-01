@@ -1,4 +1,5 @@
 import io
+import gc
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import cv2
@@ -11,18 +12,18 @@ try:
 except ImportError:
     pass
 
-# Lazy-loaded session cache to prevent heavy module loading at server startup
+# Limit thread pool workers to 1 so operations never run in parallel and spike RAM
+_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 _REMBG_SESSION = None
-_EXECUTOR = ThreadPoolExecutor(max_workers=2)
 
 
 def _get_rembg_session():
-    """Lazy loads rembg session only on the first actual request."""
+    """Lazy-load the lightweight u2netp model only on demand."""
     global _REMBG_SESSION
     if _REMBG_SESSION is None:
         try:
             from rembg import new_session
-            # Using 'u2netp' (~4MB) instead of 'u2net' (176MB) to prevent Render OOM and timeouts
+            # u2netp is ~4MB (standard u2net is 176MB and causes OOM 137)
             _REMBG_SESSION = new_session("u2netp")
         except Exception as e:
             print(f"Warning: Failed to load rembg u2netp session: {e}")
@@ -37,10 +38,8 @@ def crop_and_isolate_garment(
     primary_color: str = "",
     is_accessory: bool = False
 ) -> bytes:
-    """
-    Precision cropping with balanced padding and solid alpha masking.
-    Ensures white/cream/linen garments remain completely opaque.
-    """
+    """Memory-safe precision cropping and background isolation."""
+    # 1. Load image and immediately downscale if larger than 800px
     pil_img = Image.open(io.BytesIO(image_bytes))
     try:
         pil_img = ImageOps.exif_transpose(pil_img)
@@ -48,9 +47,12 @@ def crop_and_isolate_garment(
         pass
 
     pil_img = pil_img.convert("RGB")
+    
+    # Aggressive downsampling to prevent OOM
+    pil_img.thumbnail((800, 800), Image.Resampling.LANCZOS)
     w, h = pil_img.size
 
-    # box_2d is scaled 0 to 1000: [ymin, xmin, ymax, xmax]
+    # box_2d: [ymin, xmin, ymax, xmax] (0 to 1000 scale)
     ymin, xmin, ymax, xmax = box_2d
     top = int((ymin / 1000.0) * h)
     left = int((xmin / 1000.0) * w)
@@ -60,9 +62,8 @@ def crop_and_isolate_garment(
     box_w = max(10, right - left)
     box_h = max(10, bottom - top)
 
-    # Balanced padding to prevent chopping edges or over-zooming
-    pad_ratio_x = 0.15 if not is_accessory else 0.25
-    pad_ratio_y = 0.12 if not is_accessory else 0.20
+    pad_ratio_x = 0.12 if not is_accessory else 0.20
+    pad_ratio_y = 0.10 if not is_accessory else 0.15
 
     pad_x = int(box_w * pad_ratio_x)
     pad_y = int(box_h * pad_ratio_y)
@@ -74,18 +75,10 @@ def crop_and_isolate_garment(
 
     cropped_pil = pil_img.crop((crop_left, crop_top, crop_right, crop_bottom))
     cw, ch = cropped_pil.size
-    orig_rgb = np.array(cropped_pil)
-
-    # Resize buffer if image is excessively large for faster processing
-    max_d = max(cw, ch)
-    if max_d > 1024:
-        scale = 1024.0 / float(max_d)
-        proc_pil = cropped_pil.resize((int(cw * scale), int(ch * scale)), Image.Resampling.BILINEAR)
-    else:
-        proc_pil = cropped_pil
+    orig_rgb = np.array(cropped_pil, dtype=np.uint8)
 
     buf_in = io.BytesIO()
-    proc_pil.save(buf_in, format="PNG")
+    cropped_pil.save(buf_in, format="PNG")
     cropped_bytes = buf_in.getvalue()
 
     is_white_item = any(
@@ -97,16 +90,18 @@ def crop_and_isolate_garment(
         from rembg import remove
 
         session = _get_rembg_session()
-        if session is not None:
-            mask_bytes = remove(cropped_bytes, session=session, alpha_matting=False, only_mask=True)
-        else:
-            mask_bytes = remove(cropped_bytes, alpha_matting=False, only_mask=True)
+        mask_bytes = remove(
+            cropped_bytes, 
+            session=session, 
+            alpha_matting=False, 
+            only_mask=True
+        )
 
         mask_img = Image.open(io.BytesIO(mask_bytes)).convert("L")
         if mask_img.size != (cw, ch):
             mask_img = mask_img.resize((cw, ch), Image.Resampling.BILINEAR)
 
-        mask_np = np.array(mask_img)
+        mask_np = np.array(mask_img, dtype=np.uint8)
         foreground_ratio = np.count_nonzero(mask_np > 25) / float(cw * ch)
 
         if is_white_item and foreground_ratio < 0.30:
@@ -133,7 +128,12 @@ def crop_and_isolate_garment(
         final_pil = cropped_pil
 
     buf_out = io.BytesIO()
-    final_pil.save(buf_out, format="PNG", optimize=False)
+    final_pil.save(buf_out, format="PNG", optimize=True)
+    
+    # Explicit cleanup to keep Render memory below 512MB
+    del orig_rgb
+    gc.collect()
+    
     return buf_out.getvalue()
 
 
@@ -144,7 +144,7 @@ async def async_crop_and_isolate_garment(
     primary_color: str = "",
     is_accessory: bool = False
 ) -> bytes:
-    """Non-blocking async wrapper to offload heavy image processing from the FastAPI loop."""
+    """Non-blocking async wrapper with strict single-thread throttling."""
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         _EXECUTOR,
@@ -155,13 +155,3 @@ async def async_crop_and_isolate_garment(
         primary_color,
         is_accessory
     )
-
-
-def rotate_image_bytes(image_bytes: bytes, degrees: int = 90) -> bytes:
-    """Rotates image bytes clockwise."""
-    pil_img = Image.open(io.BytesIO(image_bytes))
-    rotated_img = pil_img.rotate(-degrees, expand=True)
-    buf_out = io.BytesIO()
-    fmt = "PNG" if pil_img.mode == "RGBA" else "JPEG"
-    rotated_img.save(buf_out, format=fmt)
-    return buf_out.getvalue()

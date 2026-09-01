@@ -406,3 +406,12 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"CRITICAL STARTUP ERROR: {e}", flush=True)
         raise e
+
+@app.api_route("/", methods=["GET", "HEAD"])
+def health_check():
+    """Lightweight health check endpoint accepting both GET and HEAD."""
+    return {
+        "status": "online",
+        "service": "WoLo Wardrobe Backend",
+        "time": time.time()
+    }
