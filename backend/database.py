@@ -6,10 +6,11 @@ from cloud_storage import resolve_image_url
 
 try:
     from supabase import create_client, Client
-    SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+    SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
     SUPABASE_KEY = os.getenv("SUPABASE_KEY", "") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     supabase: Optional[Client] = create_client(SUPABASE_URL, SUPABASE_KEY) if (SUPABASE_URL and SUPABASE_KEY) else None
-except Exception:
+except Exception as e:
+    print(f"[SUPABASE INIT ERROR] {e}", flush=True)
     supabase = None
 
 # Local memory fallback if Supabase credentials are not supplied
@@ -44,7 +45,7 @@ def get_clothing_items_by_user(user_id: str) -> List[Dict[str, Any]]:
             res = supabase.table("clothing_items").select("*").eq("user_id", str(user_id)).execute()
             items = res.data or []
         except Exception as e:
-            print(f"Supabase get_clothing_items error: {e}")
+            print(f"Supabase get_clothing_items error: {e}", flush=True)
             items = []
     
     if not items:
@@ -60,34 +61,59 @@ def get_clothing_items_by_user(user_id: str) -> List[Dict[str, Any]]:
 
 def save_clothing_item(item: Dict[str, Any]) -> Dict[str, Any]:
     clean_item = dict(item)
+    
+    # 1. Remove all frontend-only staging artifacts
     clean_item.pop("matched_existing", None)
-    if "id" not in clean_item or not clean_item["id"]:
-        clean_item["id"] = f"item_{int(time.time() * 1000)}"
+    clean_item.pop("stage_id", None)
 
-    # Ensure image_url is stored cleanly
+    # 2. Handle ID format for Supabase bigint / identity columns
+    raw_id = clean_item.get("id")
+    has_valid_numeric_id = False
+    if raw_id is not None:
+        if isinstance(raw_id, int):
+            has_valid_numeric_id = True
+        elif isinstance(raw_id, str) and raw_id.isdigit():
+            clean_item["id"] = int(raw_id)
+            has_valid_numeric_id = True
+        else:
+            # Drop non-numeric string IDs (e.g. 'item_17882...') to let Supabase auto-increment
+            clean_item.pop("id", None)
+
+    # Ensure image_url is resolved cleanly
     if clean_item.get("image_url"):
         clean_item["image_url"] = resolve_image_url(clean_item["image_url"])
 
     if supabase:
         try:
-            supabase.table("clothing_items").upsert(clean_item).execute()
+            if has_valid_numeric_id:
+                res = supabase.table("clothing_items").upsert(clean_item).execute()
+            else:
+                res = supabase.table("clothing_items").insert(clean_item).execute()
+
+            if res.data and len(res.data) > 0:
+                return res.data[0]
             return clean_item
         except Exception as e:
-            print(f"Supabase save_clothing_item error: {e}")
+            print(f"Supabase save_clothing_item error: {e}", flush=True)
 
+    # Fallback to local store
+    if "id" not in clean_item:
+        clean_item["id"] = int(time.time() * 1000)
     _LOCAL_CLOSET.append(clean_item)
     return clean_item
 
 
-def update_clothing_item_image(item_id: str, new_image_url: str) -> Optional[Dict[str, Any]]:
+def update_clothing_item_image(item_id: Any, new_image_url: str) -> Optional[Dict[str, Any]]:
     resolved_url = resolve_image_url(new_image_url)
+    clean_id = int(item_id) if str(item_id).isdigit() else str(item_id)
+
     if supabase:
         try:
-            res = supabase.table("clothing_items").update({"image_url": resolved_url}).eq("id", str(item_id)).execute()
-            if res.data:
+            res = supabase.table("clothing_items").update({"image_url": resolved_url}).eq("id", clean_id).execute()
+            if res.data and len(res.data) > 0:
                 return res.data[0]
         except Exception as e:
-            print(f"Supabase update_clothing_item_image error: {e}")
+            print(f"Supabase update_clothing_item_image error: {e}", flush=True)
 
     for itm in _LOCAL_CLOSET:
         if str(itm.get("id")) == str(item_id) or str(itm.get("db_id")) == str(item_id):
@@ -96,13 +122,15 @@ def update_clothing_item_image(item_id: str, new_image_url: str) -> Optional[Dic
     return None
 
 
-def delete_clothing_item(item_id: str) -> bool:
+def delete_clothing_item(item_id: Any) -> bool:
+    clean_id = int(item_id) if str(item_id).isdigit() else str(item_id)
+
     if supabase:
         try:
-            supabase.table("clothing_items").delete().eq("id", str(item_id)).execute()
+            supabase.table("clothing_items").delete().eq("id", clean_id).execute()
             return True
         except Exception as e:
-            print(f"Supabase delete_clothing_item error: {e}")
+            print(f"Supabase delete_clothing_item error: {e}", flush=True)
 
     global _LOCAL_CLOSET
     initial_len = len(_LOCAL_CLOSET)
@@ -119,10 +147,10 @@ def get_user_taste_profile(user_id: str) -> Dict[str, Any]:
     if supabase:
         try:
             res = supabase.table("user_taste_profiles").select("*").eq("user_id", clean_uid).execute()
-            if res.data:
+            if res.data and len(res.data) > 0:
                 return res.data[0]
         except Exception as e:
-            print(f"Supabase get_user_taste_profile error: {e}")
+            print(f"Supabase get_user_taste_profile error: {e}", flush=True)
 
     if clean_uid not in _LOCAL_TASTE:
         default_profile = {
@@ -197,7 +225,7 @@ def save_user_feedback(
         try:
             supabase.table("user_taste_profiles").upsert(profile).execute()
         except Exception as e:
-            print(f"Supabase save_user_feedback error: {e}")
+            print(f"Supabase save_user_feedback error: {e}", flush=True)
 
     _LOCAL_TASTE[str(user_id)] = profile
     return profile
@@ -230,7 +258,7 @@ def save_taste_tags(
         try:
             supabase.table("user_taste_profiles").upsert(profile).execute()
         except Exception as e:
-            print(f"Supabase save_taste_tags error: {e}")
+            print(f"Supabase save_taste_tags error: {e}", flush=True)
 
     _LOCAL_TASTE[str(user_id)] = profile
     return profile
@@ -247,12 +275,11 @@ def get_saved_outfits_by_user(user_id: str) -> List[Dict[str, Any]]:
             res = supabase.table("saved_outfits").select("*").eq("user_id", str(user_id)).execute()
             looks = res.data or []
         except Exception as e:
-            print(f"Supabase get_saved_outfits error: {e}")
+            print(f"Supabase get_saved_outfits error: {e}", flush=True)
     
     if not looks:
         looks = [look for look in _LOCAL_LOOKS if str(look.get("user_id")) == str(user_id)]
 
-    # Fetch closet items to auto-hydrate legacy records with missing item payloads
     closet_items = get_clothing_items_by_user(user_id)
     closet_map = {str(it.get("id")): it for it in closet_items}
     for it in closet_items:
@@ -260,7 +287,6 @@ def get_saved_outfits_by_user(user_id: str) -> List[Dict[str, Any]]:
             closet_map[str(it.get("db_id"))] = it
 
     for look in looks:
-        # Resolve legacy item_ids into full items objects
         items_payload = look.get("items")
         if isinstance(items_payload, str):
             try:
@@ -277,14 +303,12 @@ def get_saved_outfits_by_user(user_id: str) -> List[Dict[str, Any]]:
                     item_ids = []
             items_payload = [closet_map[str(iid)] for iid in item_ids if str(iid) in closet_map]
 
-        # Resolve image URLs inside garments
         if items_payload:
             for itm in items_payload:
                 if itm.get("image_url"):
                     itm["image_url"] = resolve_image_url(itm["image_url"])
             look["items"] = items_payload
 
-        # Resolve look top-level image
         if look.get("image_url"):
             look["image_url"] = resolve_image_url(look["image_url"])
         elif items_payload and items_payload[0].get("image_url"):
@@ -295,37 +319,44 @@ def get_saved_outfits_by_user(user_id: str) -> List[Dict[str, Any]]:
 
 def save_outfit_record(look_payload: Dict[str, Any]) -> Dict[str, Any]:
     clean_look = dict(look_payload)
-    if "id" not in clean_look or not clean_look["id"]:
-        clean_look["id"] = f"look_{int(time.time() * 1000)}"
+    
+    # If id is non-numeric, drop it so Supabase creates it, or generate an integer fallback
+    if "id" in clean_look and isinstance(clean_look["id"], str) and not clean_look["id"].isdigit():
+        clean_look.pop("id", None)
+
     if "created_at" not in clean_look or not clean_look["created_at"]:
         clean_look["created_at"] = time.strftime("%Y-%m-%d %H:%M")
 
-    # Clean title from emojis
     if "title" in clean_look:
         clean_look["title"] = clean_look["title"].replace("🥂", "").replace("✨", "").strip()
 
-    # Resolve image URLs before writing
     if clean_look.get("image_url"):
         clean_look["image_url"] = resolve_image_url(clean_look["image_url"])
 
     if supabase:
         try:
-            supabase.table("saved_outfits").upsert(clean_look).execute()
+            res = supabase.table("saved_outfits").insert(clean_look).execute()
+            if res.data and len(res.data) > 0:
+                return res.data[0]
             return clean_look
         except Exception as e:
-            print(f"Supabase save_outfit_record error: {e}")
+            print(f"Supabase save_outfit_record error: {e}", flush=True)
 
+    if "id" not in clean_look:
+        clean_look["id"] = int(time.time() * 1000)
     _LOCAL_LOOKS.append(clean_look)
     return clean_look
 
 
-def delete_saved_outfit_record(look_id: str) -> bool:
+def delete_saved_outfit_record(look_id: Any) -> bool:
+    clean_id = int(look_id) if str(look_id).isdigit() else str(look_id)
+
     if supabase:
         try:
-            supabase.table("saved_outfits").delete().eq("id", str(look_id)).execute()
+            supabase.table("saved_outfits").delete().eq("id", clean_id).execute()
             return True
         except Exception as e:
-            print(f"Supabase delete_saved_outfit_record error: {e}")
+            print(f"Supabase delete_saved_outfit_record error: {e}", flush=True)
 
     global _LOCAL_LOOKS
     init_len = len(_LOCAL_LOOKS)

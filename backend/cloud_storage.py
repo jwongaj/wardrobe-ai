@@ -4,18 +4,11 @@ import time
 import base64
 from typing import Optional, List, Dict, Any
 
+from config import supabase
+
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY", "") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-# Default to "items" or allow overriding via env
-STORAGE_BUCKET = os.getenv("STORAGE_BUCKET", "items")
-
-supabase = None
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
-        from supabase import create_client, Client
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-    except Exception as e:
-        print(f"Error initializing Supabase client in cloud_storage: {e}")
+STORAGE_BUCKET = os.getenv("STORAGE_BUCKET", "wardrobe-photos")
 
 
 def ensure_bucket_exists():
@@ -27,42 +20,41 @@ def ensure_bucket_exists():
         bucket_names = [b.name for b in buckets]
         if STORAGE_BUCKET not in bucket_names:
             supabase.storage.create_bucket(STORAGE_BUCKET, options={"public": True})
-            print(f"Created Supabase storage bucket: {STORAGE_BUCKET}")
+            print(f"Created Supabase storage bucket: {STORAGE_BUCKET}", flush=True)
     except Exception as e:
-        print(f"Bucket existence check warning: {e}")
+        print(f"Bucket existence check warning: {e}", flush=True)
 
 
-def upload_image_bytes(
-    image_bytes: bytes,
-    destination_path: str,
-    mime_type: str = "image/png"
-) -> str:
+def upload_image_bytes(image_bytes: bytes, destination_path: str, mime_type: str = "image/jpeg") -> str:
     """
-    Uploads image bytes to Supabase Storage and returns a permanent public URL.
-    Falls back gracefully to an inline Base64 Data URI if Supabase is offline.
+    Uploads raw image bytes to Supabase Storage and returns the public CDN URL.
+    Safely strips duplicate bucket prefixes from destination_path.
     """
-    if supabase:
-        try:
-            # Clean leading slashes
-            clean_path = destination_path.lstrip("/")
-            
-            # Upsert into Supabase Storage
-            supabase.storage.from_(STORAGE_BUCKET).upload(
-                path=clean_path,
-                file=image_bytes,
-                file_options={"content-type": mime_type, "upsert": "true"}
-            )
-            
-            # Retrieve permanent public URL
-            public_url = supabase.storage.from_(STORAGE_BUCKET).get_public_url(clean_path)
-            if public_url:
-                return public_url
-        except Exception as e:
-            print(f"Supabase upload failed ({destination_path}), using base64 fallback: {e}")
+    if not supabase:
+        print("[STORAGE WARNING] No supabase client initialized. Using inline base64 fallback.", flush=True)
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        return f"data:{mime_type};base64,{b64}"
 
-    # Zero-loss fallback: inline base64 data URI
-    b64_str = base64.b64encode(image_bytes).decode("utf-8")
-    return f"data:{mime_type};base64,{b64_str}"
+    clean_path = destination_path.lstrip("/")
+    if clean_path.startswith(f"{STORAGE_BUCKET}/"):
+        clean_path = clean_path[len(STORAGE_BUCKET) + 1:]
+
+    try:
+        # Upload with upsert enabled
+        supabase.storage.from_(STORAGE_BUCKET).upload(
+            path=clean_path,
+            file=image_bytes,
+            file_options={"content-type": mime_type, "upsert": "true"}
+        )
+
+        # Retrieve CDN public URL
+        public_url = supabase.storage.from_(STORAGE_BUCKET).get_public_url(clean_path)
+        return public_url
+
+    except Exception as e:
+        print(f"[STORAGE UPLOAD ERROR] {clean_path}: {e}", flush=True)
+        b64 = base64.b64encode(image_bytes).decode("utf-8")
+        return f"data:{mime_type};base64,{b64}"
 
 
 def resolve_image_url(raw_url: str) -> str:
@@ -100,7 +92,7 @@ def download_image_bytes(file_path_or_url: str) -> bytes:
 
         return supabase.storage.from_(STORAGE_BUCKET).download(path)
     except Exception as e:
-        print(f"Failed to download image ({file_path_or_url}): {e}")
+        print(f"Failed to download image ({file_path_or_url}): {e}", flush=True)
         raise e
 
 
@@ -118,5 +110,5 @@ def delete_file(file_path_or_url: str) -> bool:
         supabase.storage.from_(STORAGE_BUCKET).remove([path])
         return True
     except Exception as e:
-        print(f"Failed to delete file {file_path_or_url}: {e}")
+        print(f"Failed to delete file {file_path_or_url}: {e}", flush=True)
         return False
