@@ -3,6 +3,28 @@ import time
 from components import api
 
 
+def _render_safe_garment_image(image_url: str, title: str):
+    """
+    Renders image via st.image, guaranteeing no broken question-mark
+    boxes occur even if a legacy bad URL or empty string is passed.
+    """
+    placeholder = f"https://placehold.co/300x300/F4F6F0/7D9D64?text={title.replace(' ', '+')}"
+    
+    if not image_url or not isinstance(image_url, str):
+        st.image(placeholder, use_container_width=True)
+        return
+
+    clean_url = image_url.strip()
+    if not (clean_url.startswith("http://") or clean_url.startswith("https://") or clean_url.startswith("data:")):
+        st.image(placeholder, use_container_width=True)
+        return
+
+    try:
+        st.image(clean_url, use_container_width=True)
+    except Exception:
+        st.image(placeholder, use_container_width=True)
+
+
 def render(user_id: str, profile: dict):
     st.markdown("### 🧥 Closet Vault & Inventory")
     st.caption(f"Browsing catalog for **{profile.get('name', user_id)}**")
@@ -59,20 +81,8 @@ def render(user_id: str, profile: dict):
                 img_url = item.get("image_url", "")
                 sub_title = item.get("sub_type", "Garment")
                 
-                # Native Streamlit image rendering prevents blue question mark icons
-                if img_url:
-                    try:
-                        st.image(img_url, use_container_width=True)
-                    except Exception:
-                        st.image(
-                            f"https://placehold.co/300x300/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}",
-                            use_container_width=True
-                        )
-                else:
-                    st.image(
-                        f"https://placehold.co/300x300/F4F6F0/7D9D64?text={sub_title.replace(' ', '+')}",
-                        use_container_width=True
-                    )
+                # Robust rendering with guaranteed fallback
+                _render_safe_garment_image(img_url, sub_title)
 
                 st.markdown(f"**{sub_title}**")
                 st.caption(f"**Palette:** {item.get('primary_color', 'Neutral')} • **Fabric:** {item.get('fabric_material', 'Fabric')}")
@@ -81,16 +91,13 @@ def render(user_id: str, profile: dict):
                 act_col1, act_col2 = st.columns(2)
                 with act_col1:
                     if st.button("↻ 90°", key=f"rot_{item_id}_{cycle}", use_container_width=True):
-                        # Ensure rotate function is called safely
                         rotate_fn = getattr(api, "rotate_item_image", None)
                         if rotate_fn and rotate_fn(item_id, degrees=90):
                             st.toast("Rotated image!", icon="↻")
-                            time.sleep(0.3)
-                            st.rerun()
                         else:
-                            st.toast("Image rotation updated.", icon="↻")
-                            time.sleep(0.3)
-                            st.rerun()
+                            st.toast("Rotation updated.", icon="↻")
+                        time.sleep(0.3)
+                        st.rerun()
                 with act_col2:
                     if st.button("🗑️", key=f"del_{item_id}_{cycle}", use_container_width=True):
                         if api.delete_clothing_item(item_id):
