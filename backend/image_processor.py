@@ -10,10 +10,17 @@ try:
 except ImportError:
     pass
 
-try:
-    rembg_session = new_session("u2net")
-except Exception:
-    rembg_session = None
+# Lazy-loaded session cache to prevent heavy module loading at server startup
+_REMBG_SESSION = None
+
+def _get_rembg_session():
+    global _REMBG_SESSION
+    if _REMBG_SESSION is None:
+        try:
+            _REMBG_SESSION = new_session("u2net")
+        except Exception:
+            _REMBG_SESSION = None
+    return _REMBG_SESSION
 
 
 def crop_and_isolate_garment(
@@ -80,8 +87,9 @@ def crop_and_isolate_garment(
     )
 
     try:
-        if rembg_session is not None:
-            mask_bytes = remove(cropped_bytes, session=rembg_session, alpha_matting=False, only_mask=True)
+        session = _get_rembg_session()
+        if session is not None:
+            mask_bytes = remove(cropped_bytes, session=session, alpha_matting=False, only_mask=True)
         else:
             mask_bytes = remove(cropped_bytes, alpha_matting=False, only_mask=True)
 
