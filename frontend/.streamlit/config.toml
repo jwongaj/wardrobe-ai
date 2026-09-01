@@ -1,0 +1,11 @@
+[theme]
+primaryColor = "#111111"
+backgroundColor = "#FAF8F5"
+secondaryBackgroundColor = "#F4EFEB"
+textColor = "#1A1A1A"
+font = "sans serif"
+base = "light"
+
+[client]
+# Prevents Streamlit from showing the 'Theme' selection menu under settings
+toolbarMode = "minimal"

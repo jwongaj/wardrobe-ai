@@ -1,0 +1,13 @@
+{
+  "jasmine_wong": {
+    "id": "jasmine_wong",
+    "name": "Jaja",
+    "gender": "Womenswear",
+    "default_style": "Elevated, minimalist chic",
+    "created_at": "2026-09-01 00:10:03.631954",
+    "rotations": {
+      "4": 180,
+      "1": 90
+    }
+  }
+}

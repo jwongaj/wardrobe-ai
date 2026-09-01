@@ -1,0 +1,27 @@
+import os
+from dotenv import load_dotenv
+from supabase import create_client
+
+load_dotenv()
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+BUCKET_NAME = os.getenv("SUPABASE_BUCKET_NAME", "wardrobe-photos")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+print("--- 1. Root Files in Bucket ---")
+root_files = supabase.storage.from_(BUCKET_NAME).list("")
+for f in root_files:
+    print(f"Name: {f.get('name')} | id: {f.get('id')}")
+
+print("\n--- 2. Files in 'items/' Folder ---")
+item_files = supabase.storage.from_(BUCKET_NAME).list("items")
+for f in item_files:
+    print(f"Name: {f.get('name')} | id: {f.get('id')}")
+
+print("\n--- 3. Database Rows in clothing_items ---")
+res = supabase.table("clothing_items").select("id, user_id, image_url").execute()
+for row in res.data or []:
+    print(row)
+    
