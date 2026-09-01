@@ -1,8 +1,9 @@
 import io
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import cv2
 import numpy as np
 from PIL import Image, ImageOps
-from rembg import remove, new_session
 
 try:
     import pillow_heif
@@ -12,13 +13,19 @@ except ImportError:
 
 # Lazy-loaded session cache to prevent heavy module loading at server startup
 _REMBG_SESSION = None
+_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+
 
 def _get_rembg_session():
+    """Lazy loads rembg session only on the first actual request."""
     global _REMBG_SESSION
     if _REMBG_SESSION is None:
         try:
-            _REMBG_SESSION = new_session("u2net")
-        except Exception:
+            from rembg import new_session
+            # Using 'u2netp' (~4MB) instead of 'u2net' (176MB) to prevent Render OOM and timeouts
+            _REMBG_SESSION = new_session("u2netp")
+        except Exception as e:
+            print(f"Warning: Failed to load rembg u2netp session: {e}")
             _REMBG_SESSION = None
     return _REMBG_SESSION
 
@@ -69,7 +76,7 @@ def crop_and_isolate_garment(
     cw, ch = cropped_pil.size
     orig_rgb = np.array(cropped_pil)
 
-    # Resize buffer if image is excessively large for faster U2Net processing
+    # Resize buffer if image is excessively large for faster processing
     max_d = max(cw, ch)
     if max_d > 1024:
         scale = 1024.0 / float(max_d)
@@ -87,6 +94,8 @@ def crop_and_isolate_garment(
     )
 
     try:
+        from rembg import remove
+
         session = _get_rembg_session()
         if session is not None:
             mask_bytes = remove(cropped_bytes, session=session, alpha_matting=False, only_mask=True)
@@ -119,7 +128,8 @@ def crop_and_isolate_garment(
         rgba_out = np.dstack((r, g, b, solid_mask))
         final_pil = Image.fromarray(rgba_out, mode="RGBA")
 
-    except Exception:
+    except Exception as ex:
+        print(f"rembg processing fallback to crop: {ex}")
         final_pil = cropped_pil
 
     buf_out = io.BytesIO()
@@ -127,7 +137,28 @@ def crop_and_isolate_garment(
     return buf_out.getvalue()
 
 
+async def async_crop_and_isolate_garment(
+    image_bytes: bytes,
+    box_2d: list,
+    garment_type: str = "top",
+    primary_color: str = "",
+    is_accessory: bool = False
+) -> bytes:
+    """Non-blocking async wrapper to offload heavy image processing from the FastAPI loop."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _EXECUTOR,
+        crop_and_isolate_garment,
+        image_bytes,
+        box_2d,
+        garment_type,
+        primary_color,
+        is_accessory
+    )
+
+
 def rotate_image_bytes(image_bytes: bytes, degrees: int = 90) -> bytes:
+    """Rotates image bytes clockwise."""
     pil_img = Image.open(io.BytesIO(image_bytes))
     rotated_img = pil_img.rotate(-degrees, expand=True)
     buf_out = io.BytesIO()
