@@ -29,6 +29,9 @@ from schemas import (
     TasteProfileResponse
 )
 
+import os
+import uvicorn
+
 # Initialize database schema/store if applicable
 if hasattr(database, "init_db"):
     database.init_db()
@@ -384,3 +387,12 @@ async def get_live_weather(request: Request, location: Optional[str] = None):
         "wind_speed_kmh": 12.0,
         "is_raining": False
     }
+
+
+# =========================================================================
+# LOCAL EXECUTION ENTRYPOINT (Render runs via Uvicorn CLI start command)
+# =========================================================================
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("backend.main:app", host="0.0.0.0", port=port, reload=False)
