@@ -179,7 +179,7 @@ def get_user_taste_profile(user_id: str) -> Dict[str, Any]:
     return _LOCAL_TASTE[clean_uid]
 
 
-ef save_user_feedback(
+def save_user_feedback(
     user_id: str,
     rating: str,
     chips: List[str],
