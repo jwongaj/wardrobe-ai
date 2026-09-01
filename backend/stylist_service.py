@@ -153,13 +153,12 @@ Return ONLY a valid JSON object matching this schema:
 }}
 """
 
-    # Run through dynamic model cascade with temperature=0.7 for creative variety
+    # Run through dynamic model cascade
     result = generate_with_fallback(
         client=client,
         model_cascade=STYLIST_CASCADE,
         prompt=prompt,
-        max_output_tokens=500,
-        temperature=0.7
+        max_output_tokens=500
     )
 
     if result["success"] and result["data"]:
